@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:bitchat/nostr/nostr_event.dart';
 import 'package:bitchat/nostr/nostr_filter.dart';
 import 'package:bitchat/nostr/nostr_relay_manager.dart';
+import 'package:bitchat/nostr/relay_directory.dart';
 
 /// Bridges the chat UI with Nostr relay communication.
 ///
@@ -18,6 +19,36 @@ class NostrChatService {
             relayUrls ??
             ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'],
       );
+
+  /// Private constructor for fromLocation factory.
+  NostrChatService._withManager({
+    required NostrRelayManager relayManager,
+    String? channelTag,
+  }) : _channelTag = channelTag ?? 'bitchat-general',
+       _relayManager = relayManager;
+
+  /// Create a chat service using the closest relays to the user's location.
+  ///
+  /// Loads 305 relays from bundled CSV and selects the [relayCount]
+  /// closest via haversine distance — matching original Android behavior.
+  static Future<NostrChatService> fromLocation({
+    required double latitude,
+    required double longitude,
+    int relayCount = 5,
+    String? channelTag,
+  }) async {
+    final directory = RelayDirectory.instance;
+    await directory.initialize();
+    final urls = directory.closestRelays(
+      latitude: latitude,
+      longitude: longitude,
+      count: relayCount,
+    );
+    return NostrChatService._withManager(
+      relayManager: NostrRelayManager(relayUrls: urls),
+      channelTag: channelTag,
+    );
+  }
 
   final NostrRelayManager _relayManager;
   String _channelTag;
