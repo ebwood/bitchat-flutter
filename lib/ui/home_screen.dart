@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:bitchat/services/identity_service.dart';
@@ -42,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    // Start with default relays, then upgrade to geo-relays
     _chatService = NostrChatService(
       channelTag: _channelTagFromName(_currentChannel),
     );
@@ -52,6 +55,23 @@ class _HomeScreenState extends State<HomeScreen> {
     _statusSub = _chatService.statusStream.listen((status) {
       if (mounted) setState(() => _connectionStatus = status);
     });
+
+    // Try to upgrade to geolocation-based relays
+    try {
+      final geoService = await NostrChatService.fromLocation(
+        latitude: await _getLatitude(),
+        longitude: await _getLongitude(),
+        channelTag: _channelTagFromName(_currentChannel),
+      );
+      _chatService = geoService;
+      // Re-listen to the new service's status
+      _statusSub?.cancel();
+      _statusSub = _chatService.statusStream.listen((status) {
+        if (mounted) setState(() => _connectionStatus = status);
+      });
+    } catch (_) {
+      // Fall back to default relays (already set)
+    }
 
     await _chatService.initialize(nickname: _nickname);
 
@@ -67,6 +87,44 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (mounted) setState(() {});
+  }
+
+  /// Get latitude via IP geolocation (no native permission needed).
+  Future<double> _getLatitude() async {
+    final loc = await _fetchIpLocation();
+    return loc.$1;
+  }
+
+  /// Get longitude via IP geolocation.
+  Future<double> _getLongitude() async {
+    final loc = await _fetchIpLocation();
+    return loc.$2;
+  }
+
+  (double, double)? _cachedLocation;
+
+  /// Fetch approximate location from IP address (free, no permissions).
+  Future<(double, double)> _fetchIpLocation() async {
+    if (_cachedLocation != null) return _cachedLocation!;
+    try {
+      final uri = Uri.parse('http://ip-api.com/json/?fields=lat,lon');
+      final client = HttpClient();
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 5));
+      final response = await request.close();
+      final body = await response.transform(utf8.decoder).join();
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      _cachedLocation = (
+        (json['lat'] as num).toDouble(),
+        (json['lon'] as num).toDouble(),
+      );
+      client.close();
+      return _cachedLocation!;
+    } catch (_) {
+      // Default to a central location if IP lookup fails
+      return (39.9, -77.0); // US East Coast fallback
+    }
   }
 
   @override
