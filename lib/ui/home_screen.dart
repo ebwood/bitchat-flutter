@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:geolocator/geolocator.dart';
+
 import 'package:flutter/material.dart';
 import 'package:bitchat/nostr/geohash.dart';
 import 'package:bitchat/services/identity_service.dart';
@@ -58,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Get location and compute geohash
     try {
-      final (lat, lon) = await _fetchIpLocation();
+      final (lat, lon) = await _fetchLocation();
       _myGeohash = Geohash.encode(lat, lon, precision: 5);
 
       // Build geo-channel list with neighbors
@@ -101,11 +103,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
   (double, double)? _cachedLocation;
 
-  /// Fetch approximate location from IP address (HTTPS, no permissions).
-  Future<(double, double)> _fetchIpLocation() async {
+  /// Get device location — GPS on iOS/Android, IP fallback on macOS.
+  Future<(double, double)> _fetchLocation() async {
     if (_cachedLocation != null) return _cachedLocation!;
+
+    // Try GPS first (matches original bitchat behavior)
     try {
-      // Use HTTPS API — ip-api.com only supports HTTP which iOS/macOS ATS blocks
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (serviceEnabled) {
+        LocationPermission perm = await Geolocator.checkPermission();
+        if (perm == LocationPermission.denied) {
+          perm = await Geolocator.requestPermission();
+        }
+        if (perm == LocationPermission.whileInUse ||
+            perm == LocationPermission.always) {
+          final pos = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy:
+                  LocationAccuracy.low, // City-level is enough for geohash
+              timeLimit: Duration(seconds: 10),
+            ),
+          );
+          _cachedLocation = (pos.latitude, pos.longitude);
+          return _cachedLocation!;
+        }
+      }
+    } catch (_) {
+      // GPS unavailable (e.g. macOS desktop), fall through to IP
+    }
+
+    // IP-based fallback for macOS/desktop
+    try {
       final uri = Uri.parse('https://ipapi.co/json/');
       final client = HttpClient();
       final request = await client
@@ -122,8 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
       client.close();
       return _cachedLocation!;
     } catch (_) {
-      // Default to a central location if IP lookup fails
-      return (39.9, -77.0); // US East Coast fallback
+      return (39.9, -77.0); // Final fallback
     }
   }
 
