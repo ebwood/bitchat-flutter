@@ -4,7 +4,7 @@
 
 <p align="center">
     <b>🔗 Flutter implementation of <a href="https://github.com/permissionlesstech/bitchat">permissionlesstech/bitchat</a></b><br>
-    <i>One codebase. All platforms. Full feature parity.</i>
+    <i>One codebase. iOS, Android, macOS. Full feature parity.</i>
 </p>
 
 > [!WARNING]

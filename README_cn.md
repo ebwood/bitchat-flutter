@@ -4,7 +4,7 @@
 
 <p align="center">
     <b>🔗 <a href="https://github.com/permissionlesstech/bitchat">permissionlesstech/bitchat</a> 的 Flutter 实现</b><br>
-    <i>一套代码。全平台覆盖。功能完全对齐。</i>
+    <i>一套代码。iOS、Android、macOS。功能完全对齐。</i>
 </p>
 
 > [!WARNING]
