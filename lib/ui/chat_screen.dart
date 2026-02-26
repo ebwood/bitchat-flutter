@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:bitchat/models/bitchat_message.dart';
 import 'package:bitchat/services/command_processor.dart';
 import 'package:bitchat/services/image_message_service.dart';
+import 'package:bitchat/services/mesh_chat_service.dart';
 import 'package:bitchat/services/message_store.dart';
 import 'package:bitchat/services/nostr_chat_service.dart';
 import 'package:bitchat/services/rate_limiter.dart';
@@ -27,12 +28,16 @@ class ChatScreen extends StatefulWidget {
     this.channel = '#general',
     this.nickname = 'anon',
     this.chatService,
+    this.meshChatService,
+    this.isMeshMode = false,
     this.onNicknameChanged,
   });
 
   final String channel;
   final String nickname;
   final NostrChatService? chatService;
+  final MeshChatService? meshChatService;
+  final bool isMeshMode;
   final ValueChanged<String>? onNicknameChanged;
 
   @override
@@ -56,6 +61,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isRecording = false;
 
   StreamSubscription<ChatMessage>? _messageSub;
+  StreamSubscription<ChatMessage>? _meshMessageSub;
 
   static const _allCommands = [
     '/help',
@@ -84,6 +90,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // Load persisted history then subscribe to live messages
     _loadHistory();
     _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
+    _meshMessageSub = widget.meshChatService?.messages.listen(_onNostrMessage);
   }
 
   /// Load recent messages from SQLite for the current channel.
@@ -144,11 +151,19 @@ class _ChatScreenState extends State<ChatScreen> {
       _messageSub?.cancel();
       _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
     }
+    // Re-subscribe if mesh service changed
+    if (widget.meshChatService != oldWidget.meshChatService) {
+      _meshMessageSub?.cancel();
+      _meshMessageSub = widget.meshChatService?.messages.listen(
+        _onNostrMessage,
+      );
+    }
   }
 
   @override
   void dispose() {
     _messageSub?.cancel();
+    _meshMessageSub?.cancel();
     _controller.removeListener(_onInputChanged);
     _controller.dispose();
     _scrollController.dispose();
@@ -228,13 +243,22 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
 
-      // Send via Nostr
-      widget.chatService?.sendImageMessage(
-        payload.base64Data,
-        senderNickname: _nickname,
-        width: payload.width,
-        height: payload.height,
-      );
+      // Send via Nostr or BLE mesh
+      if (widget.isMeshMode) {
+        widget.meshChatService?.sendImageMessage(
+          payload.base64Data,
+          senderNickname: _nickname,
+          width: payload.width,
+          height: payload.height,
+        );
+      } else {
+        widget.chatService?.sendImageMessage(
+          payload.base64Data,
+          senderNickname: _nickname,
+          width: payload.width,
+          height: payload.height,
+        );
+      }
 
       // Persist sent image
       _persistMessage(
@@ -287,12 +311,20 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
 
-      // Send via Nostr
-      widget.chatService?.sendVoiceMessage(
-        payload.base64Data,
-        senderNickname: _nickname,
-        duration: payload.durationSeconds,
-      );
+      // Send via Nostr or BLE mesh
+      if (widget.isMeshMode) {
+        widget.meshChatService?.sendVoiceMessage(
+          payload.base64Data,
+          senderNickname: _nickname,
+          duration: payload.durationSeconds,
+        );
+      } else {
+        widget.chatService?.sendVoiceMessage(
+          payload.base64Data,
+          senderNickname: _nickname,
+          duration: payload.durationSeconds,
+        );
+      }
 
       // Persist
       _persistMessage(
@@ -400,8 +432,15 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    // Send via Nostr relay
-    widget.chatService?.sendMessage(text.trim(), senderNickname: _nickname);
+    // Send via Nostr or BLE mesh
+    if (widget.isMeshMode) {
+      widget.meshChatService?.sendMessage(
+        text.trim(),
+        senderNickname: _nickname,
+      );
+    } else {
+      widget.chatService?.sendMessage(text.trim(), senderNickname: _nickname);
+    }
 
     // Persist sent message
     _persistMessage(

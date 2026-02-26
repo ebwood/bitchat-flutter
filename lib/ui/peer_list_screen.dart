@@ -1,38 +1,104 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:bitchat/ble/ble_mesh_service.dart';
 import 'package:bitchat/ui/app_theme.dart';
 
 /// Full-screen peer list showing discovered and connected BLE mesh peers.
-class PeerListScreen extends StatelessWidget {
-  const PeerListScreen({super.key});
+///
+/// When [bleService] is provided, the screen subscribes to real-time peer
+/// updates from the BLE mesh. When null, shows an "Enable Mesh mode" prompt.
+class PeerListScreen extends StatefulWidget {
+  const PeerListScreen({super.key, this.bleService});
+
+  final BLEMeshService? bleService;
+
+  @override
+  State<PeerListScreen> createState() => _PeerListScreenState();
+}
+
+class _PeerListScreenState extends State<PeerListScreen> {
+  List<BLEPeerInfo> _peers = [];
+  StreamSubscription<List<BLEPeerInfo>>? _peerSub;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.bleService != null) {
+      _peers = widget.bleService!.peers;
+      _peerSub = widget.bleService!.peersStream.listen((peers) {
+        if (mounted) setState(() => _peers = peers);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _peerSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    // Placeholder peer data — will be wired to BLEMeshService later
-    final peers = <_PeerDisplayData>[];
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Peers'),
+        title: Text('Peers${_peers.isNotEmpty ? ' (${_peers.length})' : ''}'),
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: colorScheme.primary),
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: peers.isEmpty
+      body: widget.bleService == null
+          ? _buildNoServiceState(theme, colorScheme)
+          : _peers.isEmpty
           ? _buildEmptyState(theme, colorScheme)
           : ListView.separated(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              itemCount: peers.length,
+              itemCount: _peers.length,
               separatorBuilder: (_, __) =>
                   Divider(height: 1, indent: 56, color: colorScheme.surface),
               itemBuilder: (context, index) =>
-                  _buildPeerTile(context, peers[index], theme, colorScheme),
+                  _buildPeerTile(context, _peers[index], theme, colorScheme),
             ),
+    );
+  }
+
+  Widget _buildNoServiceState(ThemeData theme, ColorScheme colorScheme) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.bluetooth_disabled,
+            size: 40,
+            color: colorScheme.onSurface.withValues(alpha: 0.3),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'BLE Mesh not active',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: colorScheme.onSurface.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Switch to Mesh mode to discover peers',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12,
+              color: colorScheme.onSurface.withValues(alpha: 0.4),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -82,11 +148,14 @@ class PeerListScreen extends StatelessWidget {
 
   Widget _buildPeerTile(
     BuildContext context,
-    _PeerDisplayData peer,
+    BLEPeerInfo peer,
     ThemeData theme,
     ColorScheme colorScheme,
   ) {
     final rssiColor = AppTheme.rssiColor(peer.rssi);
+    final peerIdStr = peer.peerID.id;
+    final peerIdShort = peer.peerID.shortId;
+    final displayName = peer.nickname ?? peerIdShort;
 
     return ListTile(
       leading: Container(
@@ -109,7 +178,7 @@ class PeerListScreen extends StatelessWidget {
         ),
       ),
       title: Text(
-        peer.nickname,
+        displayName,
         style: TextStyle(
           fontFamily: 'monospace',
           fontSize: 14,
@@ -120,7 +189,7 @@ class PeerListScreen extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        peer.peerIdShort,
+        peerIdShort,
         style: TextStyle(
           fontFamily: 'monospace',
           fontSize: 11,
@@ -143,13 +212,23 @@ class PeerListScreen extends StatelessWidget {
           ),
         ],
       ),
-      onTap: () => _showPeerDetails(context, peer, colorScheme),
+      onTap: () => _showPeerDetails(
+        context,
+        peer,
+        peerIdStr,
+        peerIdShort,
+        displayName,
+        colorScheme,
+      ),
     );
   }
 
   void _showPeerDetails(
     BuildContext context,
-    _PeerDisplayData peer,
+    BLEPeerInfo peer,
+    String peerId,
+    String peerIdShort,
+    String displayName,
     ColorScheme colorScheme,
   ) {
     showModalBottomSheet(
@@ -177,12 +256,12 @@ class PeerListScreen extends StatelessWidget {
             const SizedBox(height: 20),
             _DetailRow(
               label: 'Nickname',
-              value: peer.nickname,
+              value: displayName,
               colorScheme: colorScheme,
             ),
             _DetailRow(
               label: 'Peer ID',
-              value: peer.peerId,
+              value: peerId,
               colorScheme: colorScheme,
               copyable: true,
             ),
@@ -193,7 +272,7 @@ class PeerListScreen extends StatelessWidget {
             ),
             _DetailRow(
               label: 'Status',
-              value: peer.isConnected ? 'Connected' : 'Stale',
+              value: peer.isConnected ? 'Connected' : 'Discovered',
               colorScheme: colorScheme,
             ),
             const SizedBox(height: 16),
@@ -297,20 +376,4 @@ class _DetailRow extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PeerDisplayData {
-  const _PeerDisplayData({
-    required this.nickname,
-    required this.peerId,
-    required this.peerIdShort,
-    required this.rssi,
-    required this.isConnected,
-  });
-
-  final String nickname;
-  final String peerId;
-  final String peerIdShort;
-  final int rssi;
-  final bool isConnected;
 }

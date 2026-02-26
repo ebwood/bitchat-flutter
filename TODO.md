@@ -80,9 +80,29 @@ lib/
 - [x] Message deduplication (time-bounded seen-set)
 - [x] Connection budget, exponential backoff, RSSI-based priority
 - [x] Unit tests — 14 passing
+- [x] MeshChatService — bridges BLE mesh with chat UI (mesh mode toggle)
+- [x] Connection retry storm fix (connecting/failed tracking with 30s cooldown)
+- [x] MTU 512 negotiation after connect (matching Android GATT client)
+- [x] macOS Bluetooth adapter state fix (skip `unknown` state, 5s timeout)
+- [x] Scan pause before connect (macOS CoreBluetooth requirement)
 - [ ] BLE advertising — Peripheral mode (platform channel to native) — future
 - [ ] Store & forward for offline peers — future
 - [ ] Background service (Android foreground service, iOS background BLE) — future
+
+### Known Issue — macOS BLE Connection Timeout
+
+`flutter_blue_plus` `device.connect()` times out (30s) when macOS Central
+tries to connect to Android Peripheral GATT server. Scan discovery works
+(finds device with correct service UUID and strong RSSI), but the
+underlying CoreBluetooth `centralManager.connect()` never completes.
+
+The original iOS/macOS bitchat uses native CoreBluetooth directly (4592-line
+`BLEService.swift`) without `flutter_blue_plus`. Possible causes:
+- `flutter_blue_plus` macOS support limitation
+- Missing connection options (`CBConnectPeripheralOptionNotifyOn*`)
+- May need native macOS platform channel for BLE (bypassing FBP)
+
+**Workaround**: Use Nostr mode for cross-device messaging (relay-based).
 
 ## Phase 5 — UI ✅
 
@@ -234,17 +254,17 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ---
 
-## Phase 9 — Mesh BLE Chat Integration 🔜
+## Phase 9 — Mesh BLE Chat Integration ✅
 
 > Wire `BLEMeshService` into the Mesh mode chat UI for real BLE peer-to-peer messaging.
 
 ### 9A — Mesh Mode Chat Integration (High Priority)
-- [ ] **Start BLE on Mesh mode** — Start `BLEMeshService` scanning/connecting when user selects Mesh mode
-- [ ] **Receive BLE messages** — Display received `BitchatPacket` messages in Mesh chat UI
-- [ ] **Send via BLE** — Broadcast outgoing chat messages via `BLEMeshService.broadcastPacket()`
-- [ ] **BLE permissions** — Request Bluetooth permissions per platform (Android/iOS/macOS)
-- [ ] **Peer list integration** — Wire `PeerListScreen` to actual `BLEMeshService` connected peers
-- [ ] **Connection status** — Show BLE mesh peer count and connection status in UI
+- [x] **Start BLE on Mesh mode** — Start `BLEMeshService` scanning/connecting when user selects Mesh mode
+- [x] **Receive BLE messages** — Display received `BitchatPacket` messages in Mesh chat UI
+- [x] **Send via BLE** — Broadcast outgoing chat messages via `BLEMeshService.broadcastPacket()`
+- [x] **BLE permissions** — Request Bluetooth permissions per platform (Android/iOS/macOS)
+- [x] **Peer list integration** — Wire `PeerListScreen` to actual `BLEMeshService` connected peers
+- [x] **Connection status** — Show BLE mesh peer count and connection status in UI
 
 ### 9B — Known Limitations
 - macOS `flutter_blue_plus` only supports Central role (scan), not Peripheral (advertise)

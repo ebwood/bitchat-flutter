@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:typed_data';
 
 /// Represents a peer identity in the BitChat mesh network.
@@ -6,6 +7,16 @@ import 'dart:typed_data';
 /// cryptographic public key. It is represented as a 16-character hex string.
 class PeerID {
   PeerID(this.id);
+
+  /// Generates a random PeerID using secure random bytes.
+  factory PeerID.generate() {
+    final rng = Random.secure();
+    final bytes = Uint8List(idByteLength);
+    for (var i = 0; i < idByteLength; i++) {
+      bytes[i] = rng.nextInt(256);
+    }
+    return PeerID(_bytesToHex(bytes));
+  }
 
   /// Creates a PeerID from raw binary data (8 bytes).
   factory PeerID.fromBytes(Uint8List data) {

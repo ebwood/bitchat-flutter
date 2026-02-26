@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:geolocator/geolocator.dart';
 
 import 'package:flutter/material.dart';
+import 'package:bitchat/ble/ble_mesh_service.dart';
 import 'package:bitchat/nostr/geohash.dart';
 import 'package:bitchat/services/identity_service.dart';
+import 'package:bitchat/services/mesh_chat_service.dart';
 import 'package:bitchat/services/nostr_chat_service.dart';
 import 'package:bitchat/services/private_chat_service.dart';
 import 'package:bitchat/ui/chat_screen.dart';
@@ -38,10 +40,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isMeshMode = false; // true = Mesh (BLE), false = Location (geohash)
 
   // Separate channel lists for each mode
-  List<String> _meshChannels = ['#general', '#random', '#bitcoin', '#nostr'];
+  // Mesh mode = single BLE broadcast channel (no real channel concept)
+  static const String _meshChannel = '#mesh';
   List<String> _locationChannels = ['#loading...'];
 
-  List<String> get _channels => _isMeshMode ? _meshChannels : _locationChannels;
+  List<String> get _channels =>
+      _isMeshMode ? [_meshChannel] : _locationChannels;
 
   // Nostr integration
   late NostrChatService _chatService;
@@ -49,6 +53,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final IdentityService _identityService = IdentityService();
   NostrConnectionStatus _connectionStatus = NostrConnectionStatus.disconnected;
   StreamSubscription<NostrConnectionStatus>? _statusSub;
+
+  // BLE Mesh integration
+  MeshChatService? _meshChatService;
+  MeshConnectionStatus _meshStatus = MeshConnectionStatus.disconnected;
+  StreamSubscription<MeshConnectionStatus>? _meshStatusSub;
 
   @override
   void initState() {
@@ -71,17 +80,18 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint('[bitchat] Geohash: $_myGeohash (lat=$lat, lon=$lon)');
 
       // Build location channels at different precision levels (like original)
+      // Most specific (nearest) first
       _locationChannels = [
-        // Region (precision 2) — widest
-        '🌍 Region • #${fullGeohash.substring(0, 2)}',
-        // Province (precision 4)
-        '🗺️ Province • #${fullGeohash.substring(0, 4)}',
-        // City (precision 5) — default
-        '🏙️ City • #${fullGeohash.substring(0, 5)}',
+        // Block (precision 7) — most specific
+        '🏠 Block • #${fullGeohash.substring(0, 7)}',
         // Neighborhood (precision 6)
         '🏘️ Neighborhood • #${fullGeohash.substring(0, 6)}',
-        // Block (precision 7)
-        '🏠 Block • #${fullGeohash.substring(0, 7)}',
+        // City (precision 5) — default
+        '🏙️ City • #${fullGeohash.substring(0, 5)}',
+        // Province (precision 4)
+        '🗺️ Province • #${fullGeohash.substring(0, 4)}',
+        // Region (precision 2) — widest
+        '🌍 Region • #${fullGeohash.substring(0, 2)}',
       ];
       _currentChannel = _locationChannels[2]; // Default to City
 
@@ -145,10 +155,21 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         if (perm == LocationPermission.whileInUse ||
             perm == LocationPermission.always) {
+          // Try cached/last-known position first (instant on macOS)
+          final lastKnown = await Geolocator.getLastKnownPosition();
+          if (lastKnown != null) {
+            debugPrint(
+              '[bitchat] Cached location: ${lastKnown.latitude}, ${lastKnown.longitude}',
+            );
+            _cachedLocation = (lastKnown.latitude, lastKnown.longitude);
+            return _cachedLocation!;
+          }
+
+          // Fresh position — macOS WiFi positioning can be slow (up to 30s)
           final pos = await Geolocator.getCurrentPosition(
             locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.low,
-              timeLimit: Duration(seconds: 10),
+              accuracy: LocationAccuracy.reduced,
+              timeLimit: Duration(seconds: 30),
             ),
           );
           debugPrint(
@@ -192,14 +213,12 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _statusSub?.cancel();
+    _meshStatusSub?.cancel();
+    _meshChatService?.dispose();
     _privateChatService?.dispose();
     _chatService.dispose();
     super.dispose();
   }
-
-  /// Convert display channel name to Nostr tag.
-  String _channelTagFromName(String channel) =>
-      'bitchat-${channel.replaceFirst('#', '')}';
 
   /// Extract geohash from location channel display name.
   /// e.g. '🏙️ City • #ws0bp' → 'ws0bp'
@@ -211,9 +230,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _switchChannel(String channel) {
     setState(() => _currentChannel = channel);
-    if (_isMeshMode) {
-      _chatService.switchChannel(_channelTagFromName(channel));
-    } else {
+    if (!_isMeshMode) {
+      // Only switch Nostr channel in Location mode — mesh uses BLE only
       _chatService.switchChannel(_geohashFromChannel(channel));
     }
   }
@@ -224,10 +242,13 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isMeshMode = meshMode;
       if (meshMode) {
-        _currentChannel = _meshChannels.first;
-        _chatService.useGeohashMode = false;
-        _chatService.switchChannel(_channelTagFromName(_currentChannel));
+        _currentChannel = _meshChannel;
+        // Mesh mode uses BLE only — do NOT switch Nostr channel
+        // Start BLE mesh
+        _startMesh();
       } else {
+        // Stop BLE mesh
+        _stopMesh();
         // Default to City level (index 2)
         final idx = _locationChannels.length > 2 ? 2 : 0;
         _currentChannel = _locationChannels.isNotEmpty
@@ -237,6 +258,34 @@ class _HomeScreenState extends State<HomeScreen> {
         _chatService.switchChannel(_geohashFromChannel(_currentChannel));
       }
     });
+  }
+
+  /// Start BLE mesh service.
+  Future<void> _startMesh() async {
+    _meshChatService?.dispose();
+    _meshChatService = MeshChatService(nickname: _nickname);
+    _meshStatusSub?.cancel();
+    _meshStatusSub = _meshChatService!.statusStream.listen((status) {
+      if (mounted) setState(() => _meshStatus = status);
+    });
+    final success = await _meshChatService!.start();
+    if (!success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Bluetooth is not available. Please enable Bluetooth.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  /// Stop BLE mesh service.
+  void _stopMesh() {
+    _meshStatusSub?.cancel();
+    _meshStatusSub = null;
+    _meshChatService?.stop();
+    _meshChatService = null;
+    _meshStatus = MeshConnectionStatus.disconnected;
   }
 
   /// Show dialog to enter a peer's public key and start a DM.
@@ -301,14 +350,27 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            Icon(Icons.tag, size: 16, color: colorScheme.primary),
-            const SizedBox(width: 4),
-            Text(_currentChannel),
-            const Spacer(),
-            _ConnectionStatusChip(
-              status: _connectionStatus,
-              colorScheme: colorScheme,
+            Icon(
+              _isMeshMode ? Icons.bluetooth : Icons.tag,
+              size: 16,
+              color: colorScheme.primary,
             ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(_currentChannel, overflow: TextOverflow.ellipsis),
+            ),
+            const SizedBox(width: 8),
+            if (_isMeshMode)
+              _MeshStatusChip(
+                status: _meshStatus,
+                peerCount: _meshChatService?.connectedPeerCount ?? 0,
+                colorScheme: colorScheme,
+              )
+            else
+              _ConnectionStatusChip(
+                status: _connectionStatus,
+                colorScheme: colorScheme,
+              ),
           ],
         ),
         leading: Builder(
@@ -323,9 +385,12 @@ class _HomeScreenState extends State<HomeScreen> {
         channel: _currentChannel,
         nickname: _nickname,
         chatService: _chatService,
+        meshChatService: _meshChatService,
+        isMeshMode: _isMeshMode,
         onNicknameChanged: (nick) {
           setState(() => _nickname = nick);
           _chatService.setNickname(nick);
+          _meshChatService?.setNickname(nick);
         },
       ),
     );
@@ -407,38 +472,64 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // --- Channels ---
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-              child: Text(
-                _isMeshMode ? 'MESH CHANNELS' : 'LOCATION CHANNELS',
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: colorScheme.onSurface.withValues(alpha: 0.5),
-                  letterSpacing: 1.5,
+            if (_isMeshMode)
+              // Mesh mode: single broadcast channel, no list needed
+              Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.bluetooth,
+                        size: 32,
+                        color: colorScheme.primary.withValues(alpha: 0.3),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'BLE Broadcast',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          color: colorScheme.onSurface.withValues(alpha: 0.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Text(
+                  'LOCATION CHANNELS',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface.withValues(alpha: 0.5),
+                    letterSpacing: 1.5,
+                  ),
                 ),
               ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                children: _channels
-                    .map(
-                      (ch) => _ChannelTile(
-                        channel: ch,
-                        isSelected: ch == _currentChannel,
-                        colorScheme: colorScheme,
-                        onTap: () {
-                          _switchChannel(ch);
-                          Navigator.pop(context);
-                        },
-                      ),
-                    )
-                    .toList(),
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: _channels
+                      .map(
+                        (ch) => _ChannelTile(
+                          channel: ch,
+                          isSelected: ch == _currentChannel,
+                          colorScheme: colorScheme,
+                          onTap: () {
+                            _switchChannel(ch);
+                            Navigator.pop(context);
+                          },
+                        ),
+                      )
+                      .toList(),
+                ),
               ),
-            ),
+            ],
 
             // --- Actions ---
             Divider(
@@ -462,7 +553,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Navigator.pop(context);
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const PeerListScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => PeerListScreen(
+                      bleService: _meshChatService?.bleService,
+                    ),
+                  ),
                 );
               },
             ),
@@ -653,6 +748,59 @@ class _ConnectionStatusChip extends StatelessWidget {
             decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
           ),
           const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 10,
+              color: dotColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MeshStatusChip extends StatelessWidget {
+  const _MeshStatusChip({
+    required this.status,
+    required this.peerCount,
+    required this.colorScheme,
+  });
+
+  final MeshConnectionStatus status;
+  final int peerCount;
+  final ColorScheme colorScheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color dotColor;
+    final String label;
+
+    switch (status) {
+      case MeshConnectionStatus.connected:
+        dotColor = colorScheme.primary;
+        label = '$peerCount peer${peerCount == 1 ? '' : 's'}';
+      case MeshConnectionStatus.scanning:
+        dotColor = const Color(0xFFFFB000);
+        label = 'Scanning';
+      case MeshConnectionStatus.disconnected:
+        dotColor = Colors.redAccent;
+        label = 'BLE Off';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: dotColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.bluetooth, size: 10, color: dotColor),
+          const SizedBox(width: 3),
           Text(
             label,
             style: TextStyle(
