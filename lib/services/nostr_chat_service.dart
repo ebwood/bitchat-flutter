@@ -12,18 +12,29 @@ import 'package:bitchat/nostr/relay_directory.dart';
 /// sends messages as Nostr kind-1 text notes with a `#bitchat` tag,
 /// and subscribes to incoming messages.
 class NostrChatService {
-  NostrChatService({List<String>? relayUrls, String? channelTag})
-    : _channelTag = channelTag ?? 'bitchat-general',
-      _relayManager = NostrRelayManager(
-        relayUrls:
-            relayUrls ??
-            ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'],
-      );
+  /// [channelTag] is a geohash string (e.g. 'wtw3s') for geohash mode,
+  /// or a named channel for legacy mode.
+  /// [useGeohashMode] enables kind 20000 events matching original bitchat.
+  NostrChatService({
+    List<String>? relayUrls,
+    String? channelTag,
+    this.useGeohashMode = true,
+  }) : _channelTag = channelTag ?? 'bitchat-general',
+       _relayManager = NostrRelayManager(
+         relayUrls:
+             relayUrls ??
+             [
+               'wss://relay.damus.io',
+               'wss://nos.lol',
+               'wss://relay.primal.net',
+             ],
+       );
 
   /// Private constructor for fromLocation factory.
   NostrChatService._withManager({
     required NostrRelayManager relayManager,
     String? channelTag,
+    this.useGeohashMode = true,
   }) : _channelTag = channelTag ?? 'bitchat-general',
        _relayManager = relayManager;
 
@@ -52,6 +63,10 @@ class NostrChatService {
 
   final NostrRelayManager _relayManager;
   String _channelTag;
+
+  /// Whether to use geohash mode (kind 20000) matching original bitchat.
+  /// When false, uses kind 1 + t-tag (legacy/Flutter-only mode).
+  final bool useGeohashMode;
 
   // Identity
   late String _privateKeyHex;
@@ -102,25 +117,13 @@ class NostrChatService {
   }
 
   /// Send a text chat message to the current channel.
+  ///
+  /// In geohash mode: sends kind 20000 with ["g", geohash] + ["n", nick]
+  /// and plain text content (matching original bitchat format).
   void sendMessage(String text, {String? senderNickname}) {
     if (!_initialized) return;
-
     final nick = senderNickname ?? _nickname ?? shortPubKey;
-
-    // Build content as JSON with nickname metadata
-    final content = jsonEncode({'type': 'text', 'text': text, 'nick': nick});
-
-    final event = NostrEvent.createTextNote(
-      content: content,
-      publicKeyHex: _publicKeyHex,
-      privateKeyHex: _privateKeyHex,
-      tags: [
-        ['t', _channelTag], // channel tag
-        ['client', 'bitchat-flutter'],
-      ],
-    );
-
-    _relayManager.sendEvent(event);
+    _relayManager.sendEvent(_createEvent(text, nick));
   }
 
   /// Send an image message (base64-encoded JPEG) to the current channel.
@@ -131,28 +134,14 @@ class NostrChatService {
     int? height,
   }) {
     if (!_initialized) return;
-
     final nick = senderNickname ?? _nickname ?? shortPubKey;
-
     final content = jsonEncode({
       'type': 'image',
       'data': base64Data,
-      'nick': nick,
       if (width != null) 'w': width,
       if (height != null) 'h': height,
     });
-
-    final event = NostrEvent.createTextNote(
-      content: content,
-      publicKeyHex: _publicKeyHex,
-      privateKeyHex: _privateKeyHex,
-      tags: [
-        ['t', _channelTag],
-        ['client', 'bitchat-flutter'],
-      ],
-    );
-
-    _relayManager.sendEvent(event);
+    _relayManager.sendEvent(_createEvent(content, nick));
   }
 
   /// Send a voice note (base64-encoded M4A) to the current channel.
@@ -162,27 +151,45 @@ class NostrChatService {
     double? duration,
   }) {
     if (!_initialized) return;
-
     final nick = senderNickname ?? _nickname ?? shortPubKey;
-
     final content = jsonEncode({
       'type': 'voice',
       'data': base64Data,
-      'nick': nick,
       if (duration != null) 'dur': duration,
     });
+    _relayManager.sendEvent(_createEvent(content, nick));
+  }
 
-    final event = NostrEvent.createTextNote(
-      content: content,
-      publicKeyHex: _publicKeyHex,
-      privateKeyHex: _privateKeyHex,
-      tags: [
-        ['t', _channelTag],
-        ['client', 'bitchat-flutter'],
-      ],
-    );
-
-    _relayManager.sendEvent(event);
+  /// Create a Nostr event in the appropriate format.
+  ///
+  /// Geohash mode: kind 20000 + ["g", geohash] + ["n", nick] (original bitchat)
+  /// Legacy mode: kind 1 + ["t", channelTag] (Flutter-only)
+  NostrEvent _createEvent(String content, String nick) {
+    if (useGeohashMode) {
+      // Original bitchat format: kind 20000, geohash tag, nickname tag
+      return NostrEvent.createGeohashEvent(
+        content: content,
+        geohash: _channelTag,
+        publicKeyHex: _publicKeyHex,
+        privateKeyHex: _privateKeyHex,
+        nickname: nick,
+      );
+    } else {
+      final wrappedContent = jsonEncode({
+        'type': 'text',
+        'text': content,
+        'nick': nick,
+      });
+      return NostrEvent.createTextNote(
+        content: wrappedContent,
+        publicKeyHex: _publicKeyHex,
+        privateKeyHex: _privateKeyHex,
+        tags: [
+          ['t', _channelTag],
+          ['client', 'bitchat-flutter'],
+        ],
+      );
+    }
   }
 
   /// Switch to a different channel.
@@ -196,14 +203,28 @@ class NostrChatService {
   void _subscribeToChannel(String channelTag) {
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
-    final filter = NostrFilter(
-      kinds: [NostrKind.textNote],
-      since: now - 3600, // last hour
-      tagFilters: {
-        't': [channelTag],
-      },
-      limit: 50,
-    );
+    final NostrFilter filter;
+    if (useGeohashMode) {
+      // Original bitchat format: subscribe to kind 20000 + 20001 events
+      // with #g tag matching the geohash
+      filter = NostrFilter(
+        kinds: [NostrKind.ephemeralEvent, NostrKind.geohashPresence],
+        since: now - 3600,
+        tagFilters: {
+          'g': [channelTag],
+        },
+        limit: 1000,
+      );
+    } else {
+      filter = NostrFilter(
+        kinds: [NostrKind.textNote],
+        since: now - 3600,
+        tagFilters: {
+          't': [channelTag],
+        },
+        limit: 50,
+      );
+    }
 
     _relayManager.subscribe(
       filter,
@@ -216,47 +237,119 @@ class NostrChatService {
     // Skip own messages
     if (event.pubkey == _publicKeyHex) return;
 
-    try {
-      final data = jsonDecode(event.content) as Map<String, dynamic>;
-      final msgType = data['type'] as String? ?? 'text';
-      final nick = data['nick'] as String? ?? _shortKey(event.pubkey);
-      final ts = DateTime.fromMillisecondsSinceEpoch(event.createdAt * 1000);
+    // Skip presence events (kind 20001) — they have no message content
+    if (event.kind == NostrKind.geohashPresence) return;
 
-      if (msgType == 'image') {
+    final ts = DateTime.fromMillisecondsSinceEpoch(event.createdAt * 1000);
+
+    if (useGeohashMode) {
+      // Original bitchat format: nickname in "n" tag, content is plain text
+      final nick = _getTagValue(event.tags, 'n') ?? _shortKey(event.pubkey);
+
+      // Try to parse as JSON (image/voice from Flutter clients)
+      try {
+        final data = jsonDecode(event.content) as Map<String, dynamic>;
+        final msgType = data['type'] as String?;
+        if (msgType == 'image') {
+          _messageController.add(
+            ChatMessage(
+              text: '[Image]',
+              senderNickname: nick,
+              senderPubKey: event.pubkey,
+              timestamp: ts,
+              channel: _channelTag,
+              isOwnMessage: false,
+              messageType: MessageType.image,
+              imageBase64: data['data'] as String?,
+              imageWidth: data['w'] as int?,
+              imageHeight: data['h'] as int?,
+            ),
+          );
+          return;
+        } else if (msgType == 'voice') {
+          _messageController.add(
+            ChatMessage(
+              text: '[Voice Note]',
+              senderNickname: nick,
+              senderPubKey: event.pubkey,
+              timestamp: ts,
+              channel: _channelTag,
+              isOwnMessage: false,
+              messageType: MessageType.voice,
+              voiceBase64: data['data'] as String?,
+              voiceDuration: (data['dur'] as num?)?.toDouble(),
+            ),
+          );
+          return;
+        }
+      } catch (_) {
+        // Not JSON — plain text message from original bitchat
+      }
+
+      // Plain text message (original bitchat format)
+      _messageController.add(
+        ChatMessage(
+          text: event.content,
+          senderNickname: nick,
+          senderPubKey: event.pubkey,
+          timestamp: ts,
+          channel: _channelTag,
+          isOwnMessage: false,
+        ),
+      );
+    } else {
+      // Legacy mode: JSON content with type/nick fields
+      try {
+        final data = jsonDecode(event.content) as Map<String, dynamic>;
+        final msgType = data['type'] as String? ?? 'text';
+        final nick = data['nick'] as String? ?? _shortKey(event.pubkey);
+
+        if (msgType == 'image') {
+          _messageController.add(
+            ChatMessage(
+              text: '[Image]',
+              senderNickname: nick,
+              senderPubKey: event.pubkey,
+              timestamp: ts,
+              channel: _channelTag,
+              isOwnMessage: false,
+              messageType: MessageType.image,
+              imageBase64: data['data'] as String?,
+              imageWidth: data['w'] as int?,
+              imageHeight: data['h'] as int?,
+            ),
+          );
+        } else if (msgType == 'voice') {
+          _messageController.add(
+            ChatMessage(
+              text: '[Voice Note]',
+              senderNickname: nick,
+              senderPubKey: event.pubkey,
+              timestamp: ts,
+              channel: _channelTag,
+              isOwnMessage: false,
+              messageType: MessageType.voice,
+              voiceBase64: data['data'] as String?,
+              voiceDuration: (data['dur'] as num?)?.toDouble(),
+            ),
+          );
+        } else {
+          _messageController.add(
+            ChatMessage(
+              text: data['text'] as String? ?? event.content,
+              senderNickname: nick,
+              senderPubKey: event.pubkey,
+              timestamp: ts,
+              channel: _channelTag,
+              isOwnMessage: false,
+            ),
+          );
+        }
+      } catch (_) {
         _messageController.add(
           ChatMessage(
-            text: '[Image]',
-            senderNickname: nick,
-            senderPubKey: event.pubkey,
-            timestamp: ts,
-            channel: _channelTag,
-            isOwnMessage: false,
-            messageType: MessageType.image,
-            imageBase64: data['data'] as String?,
-            imageWidth: data['w'] as int?,
-            imageHeight: data['h'] as int?,
-          ),
-        );
-      } else if (msgType == 'voice') {
-        _messageController.add(
-          ChatMessage(
-            text: '[Voice Note]',
-            senderNickname: nick,
-            senderPubKey: event.pubkey,
-            timestamp: ts,
-            channel: _channelTag,
-            isOwnMessage: false,
-            messageType: MessageType.voice,
-            voiceBase64: data['data'] as String?,
-            voiceDuration: (data['dur'] as num?)?.toDouble(),
-          ),
-        );
-      } else {
-        final text = data['text'] as String? ?? event.content;
-        _messageController.add(
-          ChatMessage(
-            text: text,
-            senderNickname: nick,
+            text: event.content,
+            senderNickname: _shortKey(event.pubkey),
             senderPubKey: event.pubkey,
             timestamp: ts,
             channel: _channelTag,
@@ -264,21 +357,15 @@ class NostrChatService {
           ),
         );
       }
-    } catch (_) {
-      // Plain text content (from non-bitchat clients)
-      _messageController.add(
-        ChatMessage(
-          text: event.content,
-          senderNickname: _shortKey(event.pubkey),
-          senderPubKey: event.pubkey,
-          timestamp: DateTime.fromMillisecondsSinceEpoch(
-            event.createdAt * 1000,
-          ),
-          channel: _channelTag,
-          isOwnMessage: false,
-        ),
-      );
     }
+  }
+
+  /// Extract the first value for a given tag name from event tags.
+  String? _getTagValue(List<List<String>> tags, String tagName) {
+    for (final tag in tags) {
+      if (tag.length >= 2 && tag[0] == tagName) return tag[1];
+    }
+    return null;
   }
 
   String _shortKey(String pubkey) {

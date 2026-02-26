@@ -106,7 +106,7 @@ class NostrEvent {
   }) {
     final tags = <List<String>>[
       ['g', geohash],
-      if (nickname != null) ['nickname', nickname],
+      if (nickname != null) ['n', nickname],
     ];
     final event = NostrEvent(
       pubkey: publicKeyHex,

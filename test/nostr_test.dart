@@ -95,7 +95,7 @@ void main() {
 
       expect(event.kind, NostrKind.ephemeralEvent);
       expect(event.getTagValue('g'), 'w21z3w');
-      expect(event.getTagValue('nickname'), 'alice');
+      expect(event.getTagValue('n'), 'alice');
       expect(event.isValid(), true);
     });
 
@@ -141,7 +141,9 @@ void main() {
         kinds: [1],
         since: 1700000000,
         limit: 50,
-        tagFilters: {'g': ['w21z3w']},
+        tagFilters: {
+          'g': ['w21z3w'],
+        },
       );
 
       final json = filter.toJson();
@@ -222,10 +224,7 @@ void main() {
 
     test('subscribe and unsubscribe tracking', () {
       final mgr = NostrRelayManager(relayUrls: []);
-      final subId = mgr.subscribe(
-        NostrFilter(kinds: [1]),
-        (event) {},
-      );
+      final subId = mgr.subscribe(NostrFilter(kinds: [1]), (event) {});
       expect(mgr.activeSubscriptionCount, 1);
 
       mgr.unsubscribe(subId);
