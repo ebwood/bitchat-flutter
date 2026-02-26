@@ -101,21 +101,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   (double, double)? _cachedLocation;
 
-  /// Fetch approximate location from IP address (free, no permissions).
+  /// Fetch approximate location from IP address (HTTPS, no permissions).
   Future<(double, double)> _fetchIpLocation() async {
     if (_cachedLocation != null) return _cachedLocation!;
     try {
-      final uri = Uri.parse('http://ip-api.com/json/?fields=lat,lon');
+      // Use HTTPS API — ip-api.com only supports HTTP which iOS/macOS ATS blocks
+      final uri = Uri.parse('https://ipapi.co/json/');
       final client = HttpClient();
       final request = await client
           .getUrl(uri)
           .timeout(const Duration(seconds: 5));
+      request.headers.set('User-Agent', 'bitchat-flutter/1.0');
       final response = await request.close();
       final body = await response.transform(utf8.decoder).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       _cachedLocation = (
-        (json['lat'] as num).toDouble(),
-        (json['lon'] as num).toDouble(),
+        (json['latitude'] as num).toDouble(),
+        (json['longitude'] as num).toDouble(),
       );
       client.close();
       return _cachedLocation!;
