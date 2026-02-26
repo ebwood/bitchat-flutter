@@ -54,11 +54,12 @@ class NostrRelayManager {
     }
   }
 
-  /// Create a relay manager using the closest relays to a location.
+  /// Create a relay manager using the closest relays to a location,
+  /// merged with the default relays.
   ///
   /// Loads all 305 relays from the bundled CSV and selects the [count]
-  /// closest relays via haversine distance. This matches the original
-  /// Android RelayDirectory behavior for geolocation-based relay selection.
+  /// closest relays via haversine distance, then merges with defaultRelays
+  /// to ensure interop with original bitchat (which always connects to defaults).
   static Future<NostrRelayManager> fromLocation({
     required double latitude,
     required double longitude,
@@ -66,12 +67,14 @@ class NostrRelayManager {
   }) async {
     final directory = dir.RelayDirectory.instance;
     await directory.initialize();
-    final urls = directory.closestRelays(
+    final geoUrls = directory.closestRelays(
       latitude: latitude,
       longitude: longitude,
       count: count,
     );
-    return NostrRelayManager(relayUrls: urls);
+    // Merge: default relays (for interop) + geo relays (for proximity)
+    final merged = <String>{...defaultRelays, ...geoUrls}.toList();
+    return NostrRelayManager(relayUrls: merged);
   }
 
   /// Default relay list — matching iOS/Android defaults.
