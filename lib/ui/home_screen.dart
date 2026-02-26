@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:bitchat/nostr/geohash.dart';
 import 'package:bitchat/services/identity_service.dart';
 import 'package:bitchat/services/nostr_chat_service.dart';
 import 'package:bitchat/services/private_chat_service.dart';
@@ -29,10 +30,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  String _currentChannel = '#general';
+  String _currentChannel = '#loading...';
   String _nickname = 'anon';
+  String? _myGeohash; // Auto-computed from IP location
 
-  final List<String> _channels = ['#general', '#random', '#bitcoin', '#nostr'];
+  List<String> _channels = ['#loading...'];
 
   // Nostr integration
   late NostrChatService _chatService;
@@ -44,10 +46,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Start with default relays, then upgrade to geo-relays
-    _chatService = NostrChatService(
-      channelTag: _channelTagFromName(_currentChannel),
-    );
+    // Start with placeholder, then upgrade to geo-channel
+    _chatService = NostrChatService(channelTag: 'bitchat-general');
     _initNostr();
   }
 
@@ -56,21 +56,31 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _connectionStatus = status);
     });
 
-    // Try to upgrade to geolocation-based relays
+    // Get location and compute geohash
     try {
+      final (lat, lon) = await _fetchIpLocation();
+      _myGeohash = Geohash.encode(lat, lon, precision: 5);
+
+      // Build geo-channel list with neighbors
+      final neighbors = Geohash.neighbors(_myGeohash!);
+      _channels = ['#$_myGeohash', ...neighbors.map((g) => '#$g')];
+      _currentChannel = '#$_myGeohash';
+
+      // Create geo-based chat service
       final geoService = await NostrChatService.fromLocation(
-        latitude: await _getLatitude(),
-        longitude: await _getLongitude(),
-        channelTag: _channelTagFromName(_currentChannel),
+        latitude: lat,
+        longitude: lon,
+        channelTag: _myGeohash!,
       );
       _chatService = geoService;
-      // Re-listen to the new service's status
       _statusSub?.cancel();
       _statusSub = _chatService.statusStream.listen((status) {
         if (mounted) setState(() => _connectionStatus = status);
       });
     } catch (_) {
-      // Fall back to default relays (already set)
+      // Fall back to default channel
+      _channels = ['#general', '#random', '#bitcoin', '#nostr'];
+      _currentChannel = '#general';
     }
 
     await _chatService.initialize(nickname: _nickname);
@@ -87,18 +97,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (mounted) setState(() {});
-  }
-
-  /// Get latitude via IP geolocation (no native permission needed).
-  Future<double> _getLatitude() async {
-    final loc = await _fetchIpLocation();
-    return loc.$1;
-  }
-
-  /// Get longitude via IP geolocation.
-  Future<double> _getLongitude() async {
-    final loc = await _fetchIpLocation();
-    return loc.$2;
   }
 
   (double, double)? _cachedLocation;
