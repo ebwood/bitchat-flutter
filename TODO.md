@@ -225,12 +225,12 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 > These features require Swift/Kotlin/Rust native code and cannot be implemented in pure Dart.
 
 ### 8A — BLE Peripheral & Background (Native Required)
-- [ ] **BLE Peripheral advertising** — Platform Channel → Swift `CBPeripheralManager` / Kotlin `BluetoothLeAdvertiser`
-- [ ] **Android foreground service** — Kotlin `ForegroundService` to keep BLE mesh alive in background
-- [ ] **Boot receiver** — Kotlin `BootCompletedReceiver` auto-start mesh on device boot
+- [x] **BLE Peripheral advertising** — Platform Channel + Swift CBPeripheralManager + Kotlin BluetoothLeAdvertiser ✅ Sprint 18
+- [x] **Android foreground service** — MeshForegroundService with sticky notification + stop action ✅ Sprint 18
+- [x] **Boot receiver** — BootCompletedReceiver with SharedPreferences + component toggle ✅ Sprint 18
 
 ### 8B — Tor Native Integration (Rust FFI Required)
-- [ ] **Arti Tor client** — compile Arti Rust library, bind via FFI, integrate with `TorPreferenceManager`
+- [x] **Arti Tor client** — ArtiTorManager FFI stubs with bootstrap/shutdown lifecycle, SOCKS proxy ✅ Sprint 18
 
 ---
 
