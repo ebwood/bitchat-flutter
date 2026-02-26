@@ -98,6 +98,9 @@ class NostrRelayManager {
   Map<String, RelayStatus> get relayStatuses =>
       _relays.map((k, v) => MapEntry(k, v.status));
 
+  /// All configured relay URLs.
+  List<String> get relayUrls => _relays.keys.toList();
+
   /// Number of connected relays.
   int get connectedCount =>
       _relays.values.where((r) => r.status == RelayStatus.connected).length;

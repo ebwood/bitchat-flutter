@@ -62,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final (lat, lon) = await _fetchLocation();
       _myGeohash = Geohash.encode(lat, lon, precision: 5);
+      debugPrint('[bitchat] Geohash: $_myGeohash (lat=$lat, lon=$lon)');
 
       // Build geo-channel list with neighbors
       final neighbors = Geohash.neighbors(_myGeohash!);
@@ -75,11 +76,20 @@ class _HomeScreenState extends State<HomeScreen> {
         channelTag: _myGeohash!,
       );
       _chatService = geoService;
+
+      // Log selected relays for debugging interop
+      final relayUrls = _chatService.relayManager.relayUrls;
+      debugPrint('[bitchat] Connected to ${relayUrls.length} relays:');
+      for (final url in relayUrls) {
+        debugPrint('[bitchat]   $url');
+      }
+
       _statusSub?.cancel();
       _statusSub = _chatService.statusStream.listen((status) {
         if (mounted) setState(() => _connectionStatus = status);
       });
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[bitchat] Geo init failed: $e');
       // Fall back to default channel
       _channels = ['#general', '#random', '#bitcoin', '#nostr'];
       _currentChannel = '#general';
