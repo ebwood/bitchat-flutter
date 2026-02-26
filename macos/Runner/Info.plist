@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BitChat uses Bluetooth to discover and communicate with nearby peers in the mesh network.</string>
 </dict>
 </plist>

@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BitChat uses Bluetooth to discover and communicate with nearby peers in the mesh network.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>BitChat uses Bluetooth to advertise and relay messages in the mesh network.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BitChat uses location for geohash-based proximity channels.</string>
 </dict>
 </plist>
