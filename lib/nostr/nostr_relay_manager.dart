@@ -57,9 +57,9 @@ class NostrRelayManager {
   static const defaultRelays = [
     'wss://relay.damus.io',
     'wss://nos.lol',
-    'wss://relay.nostr.band',
-    'wss://relay.snort.social',
-    'wss://nostr.wine',
+    'wss://relay.primal.net',
+    'wss://offchain.pub',
+    'wss://nostr21.com',
   ];
 
   final Map<String, RelayInfo> _relays = {};

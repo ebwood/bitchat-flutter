@@ -220,6 +220,65 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ---
 
+## Phase 8 — Remaining Native Platform Features
+
+> These features require Swift/Kotlin/Rust native code and cannot be implemented in pure Dart.
+
+### 8A — BLE Peripheral & Background (Native Required)
+- [ ] **BLE Peripheral advertising** — Platform Channel → Swift `CBPeripheralManager` / Kotlin `BluetoothLeAdvertiser`
+- [ ] **Android foreground service** — Kotlin `ForegroundService` to keep BLE mesh alive in background
+- [ ] **Boot receiver** — Kotlin `BootCompletedReceiver` auto-start mesh on device boot
+
+### 8B — Tor Native Integration (Rust FFI Required)
+- [ ] **Arti Tor client** — compile Arti Rust library, bind via FFI, integrate with `TorPreferenceManager`
+
+---
+
+## Phase 9 — Enhancements & Polish
+
+> Optional improvements beyond original bitchat feature parity.
+
+### 9A — Testing & CI
+- [ ] **Integration tests** — `integration_test` package, full UI flow coverage (onboarding → chat → DM)
+- [ ] **CI/CD pipeline** — GitHub Actions: lint, test, build (iOS/Android/macOS)
+- [ ] **Code coverage** — `lcov` reports, coverage badge in README
+- [ ] **Golden tests** — pixel-perfect widget snapshots for key screens
+
+### 9B — Performance
+- [ ] **Message list virtualization** — lazy loading for 10K+ message history
+- [ ] **Image caching** — disk-based LRU cache for received images
+- [ ] **Startup optimization** — deferred initialization, isolate for crypto
+- [ ] **Memory profiling** — identify and fix memory leaks in long sessions
+
+### 9C — UI/UX Polish
+- [ ] **Material 3 dynamic color** — color scheme from device wallpaper (Android 12+)
+- [ ] **Adaptive layouts** — tablet/desktop responsive views
+- [ ] **Haptic feedback** — subtle vibrations for message send, receive, errors
+- [ ] **Splash screen** — native splash with smooth transition to Flutter
+- [ ] **App icon & branding** — custom launcher icon, adaptive icon for Android
+
+### 9D — Accessibility
+- [ ] **Semantics labels** — screen reader support for all interactive elements
+- [ ] **Large text support** — dynamic type scaling, minimum touch targets
+- [ ] **High contrast mode** — WCAG AA compliant color ratios
+- [ ] **Keyboard navigation** — focus traversal for desktop/tablet
+
+### 9E — Localization Expansion
+- [ ] **Spanish (es)** — complete translation
+- [ ] **French (fr)** — complete translation
+- [ ] **German (de)** — complete translation
+- [ ] **Portuguese (pt)** — complete translation
+- [ ] **Russian (ru)** — complete translation
+- [ ] **Arabic (ar)** — complete translation + RTL layout support
+
+### 9F — Developer Experience
+- [ ] **Documentation** — API docs for all services, architecture guide
+- [ ] **Example app** — minimal demo app showcasing core protocol
+- [ ] **Plugin extraction** — separate `bitchat_protocol` package for reuse
+- [ ] **Contribution guide** — CONTRIBUTING.md with dev setup instructions
+
+---
+
 ## Cross-Platform Protocol Compatibility
 
 All binary formats MUST match iOS/Android exactly:

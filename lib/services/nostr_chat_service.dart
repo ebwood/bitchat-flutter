@@ -16,7 +16,7 @@ class NostrChatService {
       _relayManager = NostrRelayManager(
         relayUrls:
             relayUrls ??
-            ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'],
+            ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'],
       );
 
   final NostrRelayManager _relayManager;
