@@ -240,7 +240,7 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ### 9A — Testing & CI
 - [ ] **Integration tests** — `integration_test` package, full UI flow coverage (onboarding → chat → DM)
-- [ ] **CI/CD pipeline** — GitHub Actions: lint, test, build (iOS/Android/macOS)
+- [x] **CI/CD pipeline** — GitHub Actions: lint, test, build (iOS/Android/macOS) ✅ Sprint 17
 - [ ] **Code coverage** — `lcov` reports, coverage badge in README
 - [ ] **Golden tests** — pixel-perfect widget snapshots for key screens
 
@@ -252,15 +252,15 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ### 9C — UI/UX Polish
 - [ ] **Material 3 dynamic color** — color scheme from device wallpaper (Android 12+)
-- [ ] **Adaptive layouts** — tablet/desktop responsive views
+- [x] **Adaptive layouts** — AdaptiveLayout + MasterDetailLayout for phone/tablet/desktop ✅ Sprint 17
 - [ ] **Haptic feedback** — subtle vibrations for message send, receive, errors
-- [ ] **Splash screen** — native splash with smooth transition to Flutter
+- [x] **Splash screen** — staggered logo/text animations with green gradient ✅ Sprint 17
 - [ ] **App icon & branding** — custom launcher icon, adaptive icon for Android
 
 ### 9D — Accessibility
-- [ ] **Semantics labels** — screen reader support for all interactive elements
+- [x] **Semantics labels** — Semantic widget + SemanticLabels for all interactive elements ✅ Sprint 17
 - [ ] **Large text support** — dynamic type scaling, minimum touch targets
-- [ ] **High contrast mode** — WCAG AA compliant color ratios
+- [x] **High contrast mode** — A11yColors WCAG AA contrast checker + ensureContrast ✅ Sprint 17
 - [ ] **Keyboard navigation** — focus traversal for desktop/tablet
 
 ### 9E — Localization Expansion
