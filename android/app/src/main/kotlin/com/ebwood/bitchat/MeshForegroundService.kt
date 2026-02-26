@@ -23,7 +23,7 @@ class MeshForegroundService : Service() {
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.ebwood.bitchat.STOP_MESH"
 
-        private var instance: MeshForegroundService? = null
+        internal var instance: MeshForegroundService? = null
 
         fun isRunning(): Boolean = instance != null
     }
