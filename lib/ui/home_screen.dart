@@ -103,36 +103,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
   (double, double)? _cachedLocation;
 
-  /// Get device location — GPS on iOS/Android, IP fallback on macOS.
+  /// Get device location — GPS on iOS/Android/macOS, IP fallback.
   Future<(double, double)> _fetchLocation() async {
     if (_cachedLocation != null) return _cachedLocation!;
 
-    // Try GPS first (matches original bitchat behavior)
+    // Try GPS/CoreLocation first (matches original bitchat behavior)
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      debugPrint('[bitchat] Location service enabled: $serviceEnabled');
       if (serviceEnabled) {
         LocationPermission perm = await Geolocator.checkPermission();
+        debugPrint('[bitchat] Location permission: $perm');
         if (perm == LocationPermission.denied) {
           perm = await Geolocator.requestPermission();
+          debugPrint('[bitchat] After request: $perm');
         }
         if (perm == LocationPermission.whileInUse ||
             perm == LocationPermission.always) {
           final pos = await Geolocator.getCurrentPosition(
             locationSettings: const LocationSettings(
-              accuracy:
-                  LocationAccuracy.low, // City-level is enough for geohash
+              accuracy: LocationAccuracy.low,
               timeLimit: Duration(seconds: 10),
             ),
           );
+          debugPrint(
+            '[bitchat] GPS location: ${pos.latitude}, ${pos.longitude}',
+          );
           _cachedLocation = (pos.latitude, pos.longitude);
           return _cachedLocation!;
+        } else {
+          debugPrint(
+            '[bitchat] Location permission denied, falling back to IP',
+          );
         }
       }
-    } catch (_) {
-      // GPS unavailable (e.g. macOS desktop), fall through to IP
+    } catch (e) {
+      debugPrint('[bitchat] GPS failed: $e, falling back to IP');
     }
 
-    // IP-based fallback for macOS/desktop
+    // IP-based fallback
     try {
       final uri = Uri.parse('https://ipapi.co/json/');
       final client = HttpClient();
@@ -143,14 +152,15 @@ class _HomeScreenState extends State<HomeScreen> {
       final response = await request.close();
       final body = await response.transform(utf8.decoder).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
-      _cachedLocation = (
-        (json['latitude'] as num).toDouble(),
-        (json['longitude'] as num).toDouble(),
-      );
+      final lat = (json['latitude'] as num).toDouble();
+      final lon = (json['longitude'] as num).toDouble();
+      debugPrint('[bitchat] IP location: $lat, $lon');
+      _cachedLocation = (lat, lon);
       client.close();
       return _cachedLocation!;
-    } catch (_) {
-      return (39.9, -77.0); // Final fallback
+    } catch (e) {
+      debugPrint('[bitchat] IP fallback also failed: $e');
+      return (39.9, -77.0);
     }
   }
 
