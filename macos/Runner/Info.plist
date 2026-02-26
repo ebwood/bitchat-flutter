@@ -30,5 +30,7 @@
 	<string>NSApplication</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>BitChat uses Bluetooth to discover and communicate with nearby peers in the mesh network.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>BitChat uses your location to join nearby geohash channels and connect with peers in your area.</string>
 </dict>
 </plist>
