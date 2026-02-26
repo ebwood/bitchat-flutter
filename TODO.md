@@ -234,48 +234,42 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ---
 
-## Phase 9 — Enhancements & Polish
+## Phase 9 — Enhancements & Polish ⏸️ 暂不实现
 
-> Optional improvements beyond original bitchat feature parity.
+> ⚠️ 以下为自行添加的增强建议，**不属于原版 bitchat 功能**。仅作为未来参考，暂不实现。
 
+<!--
 ### 9A — Testing & CI
-- [ ] **Integration tests** — `integration_test` package, full UI flow coverage (onboarding → chat → DM)
-- [x] **CI/CD pipeline** — GitHub Actions: lint, test, build (iOS/Android/macOS) ✅ Sprint 17
-- [ ] **Code coverage** — `lcov` reports, coverage badge in README
-- [ ] **Golden tests** — pixel-perfect widget snapshots for key screens
+- [ ] Integration tests
+- [x] CI/CD pipeline ✅ Sprint 17
+- [ ] Code coverage
+- [ ] Golden tests
 
 ### 9B — Performance
-- [ ] **Message list virtualization** — lazy loading for 10K+ message history
-- [ ] **Image caching** — disk-based LRU cache for received images
-- [ ] **Startup optimization** — deferred initialization, isolate for crypto
-- [ ] **Memory profiling** — identify and fix memory leaks in long sessions
+- [ ] Message list virtualization
+- [ ] Image caching
+- [ ] Startup optimization
+- [ ] Memory profiling
 
 ### 9C — UI/UX Polish
-- [ ] **Material 3 dynamic color** — color scheme from device wallpaper (Android 12+)
-- [x] **Adaptive layouts** — AdaptiveLayout + MasterDetailLayout for phone/tablet/desktop ✅ Sprint 17
-- [ ] **Haptic feedback** — subtle vibrations for message send, receive, errors
-- [x] **Splash screen** — staggered logo/text animations with green gradient ✅ Sprint 17
-- [ ] **App icon & branding** — custom launcher icon, adaptive icon for Android
+- [ ] Material 3 dynamic color
+- [x] Adaptive layouts ✅ Sprint 17
+- [ ] Haptic feedback
+- [x] Splash screen ✅ Sprint 17
+- [ ] App icon & branding
 
 ### 9D — Accessibility
-- [x] **Semantics labels** — Semantic widget + SemanticLabels for all interactive elements ✅ Sprint 17
-- [ ] **Large text support** — dynamic type scaling, minimum touch targets
-- [x] **High contrast mode** — A11yColors WCAG AA contrast checker + ensureContrast ✅ Sprint 17
-- [ ] **Keyboard navigation** — focus traversal for desktop/tablet
+- [x] Semantics labels ✅ Sprint 17
+- [ ] Large text support
+- [x] High contrast mode ✅ Sprint 17
+- [ ] Keyboard navigation
 
 ### 9E — Localization Expansion
-- [ ] **Spanish (es)** — complete translation
-- [ ] **French (fr)** — complete translation
-- [ ] **German (de)** — complete translation
-- [ ] **Portuguese (pt)** — complete translation
-- [ ] **Russian (ru)** — complete translation
-- [ ] **Arabic (ar)** — complete translation + RTL layout support
+- [ ] Spanish / French / German / Portuguese / Russian / Arabic
 
 ### 9F — Developer Experience
-- [ ] **Documentation** — API docs for all services, architecture guide
-- [ ] **Example app** — minimal demo app showcasing core protocol
-- [ ] **Plugin extraction** — separate `bitchat_protocol` package for reuse
-- [ ] **Contribution guide** — CONTRIBUTING.md with dev setup instructions
+- [ ] Documentation / Example app / Plugin extraction / Contribution guide
+-->
 
 ---
 
