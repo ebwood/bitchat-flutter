@@ -66,7 +66,7 @@ class NostrChatService {
 
   /// Whether to use geohash mode (kind 20000) matching original bitchat.
   /// When false, uses kind 1 + t-tag (legacy/Flutter-only mode).
-  final bool useGeohashMode;
+  bool useGeohashMode;
 
   // Identity
   late String _privateKeyHex;

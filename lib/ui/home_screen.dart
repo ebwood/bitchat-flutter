@@ -35,8 +35,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _currentChannel = '#loading...';
   String _nickname = 'anon';
   String? _myGeohash; // Auto-computed from IP location
+  bool _isMeshMode = false; // true = Mesh (BLE), false = Location (geohash)
 
-  List<String> _channels = ['#loading...'];
+  // Separate channel lists for each mode
+  List<String> _meshChannels = ['#general', '#random', '#bitcoin', '#nostr'];
+  List<String> _locationChannels = ['#loading...'];
+
+  List<String> get _channels => _isMeshMode ? _meshChannels : _locationChannels;
 
   // Nostr integration
   late NostrChatService _chatService;
@@ -61,13 +66,24 @@ class _HomeScreenState extends State<HomeScreen> {
     // Get location and compute geohash
     try {
       final (lat, lon) = await _fetchLocation();
-      _myGeohash = Geohash.encode(lat, lon, precision: 5);
+      final fullGeohash = Geohash.encode(lat, lon, precision: 7);
+      _myGeohash = fullGeohash.substring(0, 5); // City level
       debugPrint('[bitchat] Geohash: $_myGeohash (lat=$lat, lon=$lon)');
 
-      // Build geo-channel list with neighbors
-      final neighbors = Geohash.neighbors(_myGeohash!);
-      _channels = ['#$_myGeohash', ...neighbors.map((g) => '#$g')];
-      _currentChannel = '#$_myGeohash';
+      // Build location channels at different precision levels (like original)
+      _locationChannels = [
+        // Region (precision 2) — widest
+        '🌍 Region • #${fullGeohash.substring(0, 2)}',
+        // Province (precision 4)
+        '🗺️ Province • #${fullGeohash.substring(0, 4)}',
+        // City (precision 5) — default
+        '🏙️ City • #${fullGeohash.substring(0, 5)}',
+        // Neighborhood (precision 6)
+        '🏘️ Neighborhood • #${fullGeohash.substring(0, 6)}',
+        // Block (precision 7)
+        '🏠 Block • #${fullGeohash.substring(0, 7)}',
+      ];
+      _currentChannel = _locationChannels[2]; // Default to City
 
       // Create geo-based chat service
       final geoService = await NostrChatService.fromLocation(
@@ -90,8 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (e) {
       debugPrint('[bitchat] Geo init failed: $e');
-      // Fall back to default channel
-      _channels = ['#general', '#random', '#bitcoin', '#nostr'];
+      _locationChannels = ['#general'];
       _currentChannel = '#general';
     }
 
@@ -186,9 +201,42 @@ class _HomeScreenState extends State<HomeScreen> {
   String _channelTagFromName(String channel) =>
       'bitchat-${channel.replaceFirst('#', '')}';
 
+  /// Extract geohash from location channel display name.
+  /// e.g. '🏙️ City • #ws0bp' → 'ws0bp'
+  String _geohashFromChannel(String channel) {
+    final hashIdx = channel.indexOf('#');
+    if (hashIdx >= 0) return channel.substring(hashIdx + 1);
+    return channel.replaceFirst('#', '');
+  }
+
   void _switchChannel(String channel) {
     setState(() => _currentChannel = channel);
-    _chatService.switchChannel(_channelTagFromName(channel));
+    if (_isMeshMode) {
+      _chatService.switchChannel(_channelTagFromName(channel));
+    } else {
+      _chatService.switchChannel(_geohashFromChannel(channel));
+    }
+  }
+
+  /// Switch between Mesh (BLE) and Location (GPS geohash) modes.
+  void _switchMode(bool meshMode) {
+    if (_isMeshMode == meshMode) return;
+    setState(() {
+      _isMeshMode = meshMode;
+      if (meshMode) {
+        _currentChannel = _meshChannels.first;
+        _chatService.useGeohashMode = false;
+        _chatService.switchChannel(_channelTagFromName(_currentChannel));
+      } else {
+        // Default to City level (index 2)
+        final idx = _locationChannels.length > 2 ? 2 : 0;
+        _currentChannel = _locationChannels.isNotEmpty
+            ? _locationChannels[idx]
+            : '#general';
+        _chatService.useGeohashMode = true;
+        _chatService.switchChannel(_geohashFromChannel(_currentChannel));
+      }
+    });
   }
 
   /// Show dialog to enter a peer's public key and start a DM.
@@ -330,11 +378,40 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
+            // --- Mode Switcher ---
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    label: Text('Mesh'),
+                    icon: Icon(Icons.bluetooth, size: 16),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    label: Text('Location'),
+                    icon: Icon(Icons.location_on, size: 16),
+                  ),
+                ],
+                selected: {_isMeshMode},
+                onSelectionChanged: (val) {
+                  _switchMode(val.first);
+                },
+                style: SegmentedButton.styleFrom(
+                  textStyle: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+
             // --- Channels ---
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
               child: Text(
-                'CHANNELS',
+                _isMeshMode ? 'MESH CHANNELS' : 'LOCATION CHANNELS',
                 style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 10,
@@ -344,19 +421,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
-            ..._channels.map(
-              (ch) => _ChannelTile(
-                channel: ch,
-                isSelected: ch == _currentChannel,
-                colorScheme: colorScheme,
-                onTap: () {
-                  _switchChannel(ch);
-                  Navigator.pop(context);
-                },
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: _channels
+                    .map(
+                      (ch) => _ChannelTile(
+                        channel: ch,
+                        isSelected: ch == _currentChannel,
+                        colorScheme: colorScheme,
+                        onTap: () {
+                          _switchChannel(ch);
+                          Navigator.pop(context);
+                        },
+                      ),
+                    )
+                    .toList(),
               ),
             ),
-
-            const Spacer(),
 
             // --- Actions ---
             Divider(
