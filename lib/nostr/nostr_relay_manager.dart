@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'nostr_event.dart';
 import 'nostr_filter.dart';
+import 'relay_directory.dart' as dir;
 
 /// Connection state for a relay.
 enum RelayStatus { disconnected, connecting, connected, error }
@@ -51,6 +52,26 @@ class NostrRelayManager {
     for (final url in relayUrls ?? defaultRelays) {
       _relays[url] = RelayInfo(url: url);
     }
+  }
+
+  /// Create a relay manager using the closest relays to a location.
+  ///
+  /// Loads all 305 relays from the bundled CSV and selects the [count]
+  /// closest relays via haversine distance. This matches the original
+  /// Android RelayDirectory behavior for geolocation-based relay selection.
+  static Future<NostrRelayManager> fromLocation({
+    required double latitude,
+    required double longitude,
+    int count = 5,
+  }) async {
+    final directory = dir.RelayDirectory.instance;
+    await directory.initialize();
+    final urls = directory.closestRelays(
+      latitude: latitude,
+      longitude: longitude,
+      count: count,
+    );
+    return NostrRelayManager(relayUrls: urls);
   }
 
   /// Default relay list — matching iOS/Android defaults.
