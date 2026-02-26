@@ -234,9 +234,9 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ---
 
-## Phase 9 — Enhancements & Polish ⏸️ 暂不实现
+## Phase 9 — Enhancements & Polish ⏸️ Deferred
 
-> ⚠️ 以下为自行添加的增强建议，**不属于原版 bitchat 功能**。仅作为未来参考，暂不实现。
+> ⚠️ The items below are self-proposed enhancements, **not part of the original bitchat**. Kept here for future reference only.
 
 <!--
 ### 9A — Testing & CI
