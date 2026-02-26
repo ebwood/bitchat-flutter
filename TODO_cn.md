@@ -199,6 +199,25 @@ lib/
 
 ---
 
+## 第九阶段 — Mesh BLE 聊天集成 🔜
+
+> 将 `BLEMeshService` 接入 Mesh 模式聊天 UI，实现真正的 BLE 蓝牙点对点通信。
+
+### 9A — Mesh 模式聊天集成（高优先级）
+- [ ] **Mesh 模式启动 BLE** — 用户选择 Mesh 模式时启动 `BLEMeshService` 扫描和连接
+- [ ] **接收 BLE 消息** — 将收到的 `BitchatPacket` 消息显示在 Mesh 聊天 UI
+- [ ] **通过 BLE 发送** — 发送聊天消息时通过 `BLEMeshService.broadcastPacket()` 广播
+- [ ] **BLE 权限处理** — 按平台（Android/iOS/macOS）请求蓝牙权限
+- [ ] **节点列表集成** — 将 `PeerListScreen` 接入实际的 `BLEMeshService` 已连接节点
+- [ ] **连接状态显示** — 在 UI 中显示 BLE mesh 节点数量和连接状态
+
+### 9B — 已知限制
+- macOS `flutter_blue_plus` 仅支持 Central 角色（扫描），不支持 Peripheral（广播）
+- BLE 范围约 10-30 米，需要两台设备都开启蓝牙
+- iOS 后台 BLE 需要特定的 entitlements 和后台模式
+
+---
+
 ## 跨平台协议兼容性
 
 所有二进制格式必须与 iOS/Android 完全一致：

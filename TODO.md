@@ -159,12 +159,12 @@ _iOS files: `GossipSyncManager.swift`, `GCSFilter.swift`, `RequestSyncManager.sw
 ### 7F — BLE Peripheral & Mesh (High Priority)
 _iOS: `BLEService.swift` (210KB), Android: `MeshForegroundService.kt`, `MeshGraph.kt`, `MeshDelegateHandler.kt`_
 
-- [ ] **BLE Peripheral advertising** — platform channel → native `CBPeripheralManager` / `BluetoothLeAdvertiser`
-- [ ] **Android foreground service** — `MeshForegroundService.kt` keeps BLE mesh alive in background
+- [x] **BLE Peripheral advertising** — Platform Channel + Swift CBPeripheralManager + Kotlin BluetoothLeAdvertiser ✅ Sprint 18
+- [x] **Android foreground service** — MeshForegroundService with sticky notification + stop action ✅ Sprint 18
 - [x] **Unified peer service** — UnifiedPeerService merges BLE+Nostr peers, transport/quality tracking ✅ Sprint 15
 - [ ] **Mesh topology graph** — `MeshGraph.kt` (14KB) visual network graph of multi-hop peers
 - [x] **Network activation** — NetworkMode (all/bleOnly/nostrOnly/auto) smart toggle ✅ Sprint 15
-- [ ] **Boot receiver** — `BootCompletedReceiver.kt` auto-start mesh on device boot
+- [x] **Boot receiver** — BootCompletedReceiver with SharedPreferences + component toggle ✅ Sprint 18
 
 ### 7G — Chat UI Enhancements (Medium Priority)
 _iOS: `ContentView.swift` (91KB), Android: `ChatViewModel.kt` (48KB), `MessageComponents.kt`, `LinkPreviewPill.kt`, `MatrixEncryptionAnimation.kt`, `PoWStatusIndicator.kt`_
@@ -234,42 +234,22 @@ _iOS: `Localizable.xcstrings` (996KB — massive multi-language file)_
 
 ---
 
-## Phase 9 — Enhancements & Polish ⏸️ Deferred
+## Phase 9 — Mesh BLE Chat Integration 🔜
 
-> ⚠️ The items below are self-proposed enhancements, **not part of the original bitchat**. Kept here for future reference only.
+> Wire `BLEMeshService` into the Mesh mode chat UI for real BLE peer-to-peer messaging.
 
-<!--
-### 9A — Testing & CI
-- [ ] Integration tests
-- [x] CI/CD pipeline ✅ Sprint 17
-- [ ] Code coverage
-- [ ] Golden tests
+### 9A — Mesh Mode Chat Integration (High Priority)
+- [ ] **Start BLE on Mesh mode** — Start `BLEMeshService` scanning/connecting when user selects Mesh mode
+- [ ] **Receive BLE messages** — Display received `BitchatPacket` messages in Mesh chat UI
+- [ ] **Send via BLE** — Broadcast outgoing chat messages via `BLEMeshService.broadcastPacket()`
+- [ ] **BLE permissions** — Request Bluetooth permissions per platform (Android/iOS/macOS)
+- [ ] **Peer list integration** — Wire `PeerListScreen` to actual `BLEMeshService` connected peers
+- [ ] **Connection status** — Show BLE mesh peer count and connection status in UI
 
-### 9B — Performance
-- [ ] Message list virtualization
-- [ ] Image caching
-- [ ] Startup optimization
-- [ ] Memory profiling
-
-### 9C — UI/UX Polish
-- [ ] Material 3 dynamic color
-- [x] Adaptive layouts ✅ Sprint 17
-- [ ] Haptic feedback
-- [x] Splash screen ✅ Sprint 17
-- [ ] App icon & branding
-
-### 9D — Accessibility
-- [x] Semantics labels ✅ Sprint 17
-- [ ] Large text support
-- [x] High contrast mode ✅ Sprint 17
-- [ ] Keyboard navigation
-
-### 9E — Localization Expansion
-- [ ] Spanish / French / German / Portuguese / Russian / Arabic
-
-### 9F — Developer Experience
-- [ ] Documentation / Example app / Plugin extraction / Contribution guide
--->
+### 9B — Known Limitations
+- macOS `flutter_blue_plus` only supports Central role (scan), not Peripheral (advertise)
+- BLE range ~10-30m, requires both devices to have Bluetooth enabled
+- iOS background BLE requires specific entitlements and background modes
 
 ---
 
