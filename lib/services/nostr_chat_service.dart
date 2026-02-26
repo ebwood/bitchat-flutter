@@ -30,6 +30,8 @@ class NostrChatService {
   bool _initialized = false;
   bool get isInitialized => _initialized;
   String get publicKeyHex => _publicKeyHex;
+  String get privateKeyHex => _privateKeyHex;
+  NostrRelayManager get relayManager => _relayManager;
   String get shortPubKey => _publicKeyHex.length >= 12
       ? '${_publicKeyHex.substring(0, 6)}...${_publicKeyHex.substring(_publicKeyHex.length - 6)}'
       : _publicKeyHex;
@@ -68,14 +70,14 @@ class NostrChatService {
     _subscribeToChannel(_channelTag);
   }
 
-  /// Send a chat message to the current channel.
+  /// Send a text chat message to the current channel.
   void sendMessage(String text, {String? senderNickname}) {
     if (!_initialized) return;
 
     final nick = senderNickname ?? _nickname ?? shortPubKey;
 
     // Build content as JSON with nickname metadata
-    final content = jsonEncode({'text': text, 'nick': nick});
+    final content = jsonEncode({'type': 'text', 'text': text, 'nick': nick});
 
     final event = NostrEvent.createTextNote(
       content: content,
@@ -83,6 +85,68 @@ class NostrChatService {
       privateKeyHex: _privateKeyHex,
       tags: [
         ['t', _channelTag], // channel tag
+        ['client', 'bitchat-flutter'],
+      ],
+    );
+
+    _relayManager.sendEvent(event);
+  }
+
+  /// Send an image message (base64-encoded JPEG) to the current channel.
+  void sendImageMessage(
+    String base64Data, {
+    String? senderNickname,
+    int? width,
+    int? height,
+  }) {
+    if (!_initialized) return;
+
+    final nick = senderNickname ?? _nickname ?? shortPubKey;
+
+    final content = jsonEncode({
+      'type': 'image',
+      'data': base64Data,
+      'nick': nick,
+      if (width != null) 'w': width,
+      if (height != null) 'h': height,
+    });
+
+    final event = NostrEvent.createTextNote(
+      content: content,
+      publicKeyHex: _publicKeyHex,
+      privateKeyHex: _privateKeyHex,
+      tags: [
+        ['t', _channelTag],
+        ['client', 'bitchat-flutter'],
+      ],
+    );
+
+    _relayManager.sendEvent(event);
+  }
+
+  /// Send a voice note (base64-encoded M4A) to the current channel.
+  void sendVoiceMessage(
+    String base64Data, {
+    String? senderNickname,
+    double? duration,
+  }) {
+    if (!_initialized) return;
+
+    final nick = senderNickname ?? _nickname ?? shortPubKey;
+
+    final content = jsonEncode({
+      'type': 'voice',
+      'data': base64Data,
+      'nick': nick,
+      if (duration != null) 'dur': duration,
+    });
+
+    final event = NostrEvent.createTextNote(
+      content: content,
+      publicKeyHex: _publicKeyHex,
+      privateKeyHex: _privateKeyHex,
+      tags: [
+        ['t', _channelTag],
         ['client', 'bitchat-flutter'],
       ],
     );
@@ -123,21 +187,52 @@ class NostrChatService {
 
     try {
       final data = jsonDecode(event.content) as Map<String, dynamic>;
-      final text = data['text'] as String? ?? event.content;
+      final msgType = data['type'] as String? ?? 'text';
       final nick = data['nick'] as String? ?? _shortKey(event.pubkey);
+      final ts = DateTime.fromMillisecondsSinceEpoch(event.createdAt * 1000);
 
-      _messageController.add(
-        ChatMessage(
-          text: text,
-          senderNickname: nick,
-          senderPubKey: event.pubkey,
-          timestamp: DateTime.fromMillisecondsSinceEpoch(
-            event.createdAt * 1000,
+      if (msgType == 'image') {
+        _messageController.add(
+          ChatMessage(
+            text: '[Image]',
+            senderNickname: nick,
+            senderPubKey: event.pubkey,
+            timestamp: ts,
+            channel: _channelTag,
+            isOwnMessage: false,
+            messageType: MessageType.image,
+            imageBase64: data['data'] as String?,
+            imageWidth: data['w'] as int?,
+            imageHeight: data['h'] as int?,
           ),
-          channel: _channelTag,
-          isOwnMessage: false,
-        ),
-      );
+        );
+      } else if (msgType == 'voice') {
+        _messageController.add(
+          ChatMessage(
+            text: '[Voice Note]',
+            senderNickname: nick,
+            senderPubKey: event.pubkey,
+            timestamp: ts,
+            channel: _channelTag,
+            isOwnMessage: false,
+            messageType: MessageType.voice,
+            voiceBase64: data['data'] as String?,
+            voiceDuration: (data['dur'] as num?)?.toDouble(),
+          ),
+        );
+      } else {
+        final text = data['text'] as String? ?? event.content;
+        _messageController.add(
+          ChatMessage(
+            text: text,
+            senderNickname: nick,
+            senderPubKey: event.pubkey,
+            timestamp: ts,
+            channel: _channelTag,
+            isOwnMessage: false,
+          ),
+        );
+      }
     } catch (_) {
       // Plain text content (from non-bitchat clients)
       _messageController.add(
@@ -180,6 +275,9 @@ class NostrChatService {
   }
 }
 
+/// Message type enum.
+enum MessageType { text, image, voice, system }
+
 /// A received or sent chat message.
 class ChatMessage {
   const ChatMessage({
@@ -189,6 +287,12 @@ class ChatMessage {
     required this.timestamp,
     required this.channel,
     required this.isOwnMessage,
+    this.messageType = MessageType.text,
+    this.imageBase64,
+    this.imageWidth,
+    this.imageHeight,
+    this.voiceBase64,
+    this.voiceDuration,
   });
 
   final String text;
@@ -197,6 +301,15 @@ class ChatMessage {
   final DateTime timestamp;
   final String channel;
   final bool isOwnMessage;
+  final MessageType messageType;
+  final String? imageBase64;
+  final int? imageWidth;
+  final int? imageHeight;
+  final String? voiceBase64;
+  final double? voiceDuration;
+
+  bool get isImage => messageType == MessageType.image && imageBase64 != null;
+  bool get isVoice => messageType == MessageType.voice && voiceBase64 != null;
 }
 
 /// Service connection status.

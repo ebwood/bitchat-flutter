@@ -4,7 +4,15 @@ import 'package:flutter/material.dart';
 
 import 'package:bitchat/models/bitchat_message.dart';
 import 'package:bitchat/services/command_processor.dart';
+import 'package:bitchat/services/image_message_service.dart';
+import 'package:bitchat/services/message_store.dart';
 import 'package:bitchat/services/nostr_chat_service.dart';
+import 'package:bitchat/services/rate_limiter.dart';
+import 'package:bitchat/services/voice_note_service.dart';
+import 'package:bitchat/ui/message_formatter.dart';
+import 'package:bitchat/ui/peer_color.dart';
+import 'package:bitchat/ui/widgets/image_bubble.dart';
+import 'package:bitchat/ui/widgets/voice_note_bubble.dart';
 
 /// Terminal-style chat screen for BitChat.
 ///
@@ -36,11 +44,16 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final _focusNode = FocusNode();
+  final _imageService = ImageMessageService();
+  final _voiceService = VoiceNoteService();
+  final _rateLimiter = RateLimiter();
 
   late String _nickname;
   String? _lastChannel;
   bool _showSuggestions = false;
   List<String> _filteredCommands = [];
+  bool _isSendingImage = false;
+  bool _isRecording = false;
 
   StreamSubscription<ChatMessage>? _messageSub;
 
@@ -62,14 +75,58 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _nickname = widget.nickname;
     _lastChannel = widget.channel;
-    _addSystemMessage('Welcome to bitchat! 🔐');
+    _addSystemMessage('Welcome to bitchat! \u{1F510}');
     _addSystemMessage('Type /help for available commands.');
     _addSystemMessage('Joined ${widget.channel}');
 
     _controller.addListener(_onInputChanged);
 
-    // Listen for incoming Nostr messages
+    // Load persisted history then subscribe to live messages
+    _loadHistory();
     _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
+  }
+
+  /// Load recent messages from SQLite for the current channel.
+  Future<void> _loadHistory() async {
+    try {
+      await MessageStore.instance.initialize();
+      final stored = await MessageStore.instance.loadMessages(
+        widget.channel,
+        limit: 50,
+      );
+      if (stored.isNotEmpty && mounted) {
+        setState(() {
+          for (final msg in stored) {
+            if (msg.isImage) {
+              _messages.add(
+                _DisplayMessage.image(
+                  sender: msg.senderNickname,
+                  base64Data: msg.imageBase64!,
+                  timestamp: msg.timestamp,
+                  width: msg.imageWidth,
+                  height: msg.imageHeight,
+                  isOwn: msg.isOwnMessage,
+                ),
+              );
+            } else {
+              _messages.add(
+                _DisplayMessage.remote(
+                  sender: msg.senderNickname,
+                  content: msg.text,
+                  timestamp: msg.timestamp,
+                ),
+              );
+            }
+          }
+        });
+        _addSystemMessage(
+          '\u{1F4C2} Loaded ${stored.length} messages from history',
+        );
+        _scrollToBottom();
+      }
+    } catch (_) {
+      // SQLite might not be available in tests — continue gracefully
+    }
   }
 
   @override
@@ -96,21 +153,176 @@ class _ChatScreenState extends State<ChatScreen> {
     _controller.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
+    _voiceService.dispose();
     super.dispose();
   }
 
   void _onNostrMessage(ChatMessage msg) {
-    _addSystemMessage(null); // force a rebuild
     setState(() {
-      _messages.add(
-        _DisplayMessage.remote(
-          sender: msg.senderNickname,
-          content: msg.text,
-          timestamp: msg.timestamp,
-        ),
-      );
+      if (msg.isImage) {
+        _messages.add(
+          _DisplayMessage.image(
+            sender: msg.senderNickname,
+            base64Data: msg.imageBase64!,
+            timestamp: msg.timestamp,
+            width: msg.imageWidth,
+            height: msg.imageHeight,
+          ),
+        );
+      } else if (msg.isVoice) {
+        _messages.add(
+          _DisplayMessage.voice(
+            sender: msg.senderNickname,
+            base64Data: msg.voiceBase64!,
+            timestamp: msg.timestamp,
+            durationSeconds: msg.voiceDuration ?? 0,
+            isOwn: msg.isOwnMessage,
+          ),
+        );
+      } else {
+        _messages.add(
+          _DisplayMessage.remote(
+            sender: msg.senderNickname,
+            content: msg.text,
+            timestamp: msg.timestamp,
+          ),
+        );
+      }
     });
     _scrollToBottom();
+    // Persist received message
+    _persistMessage(msg);
+  }
+
+  /// Save a message to local storage (fire-and-forget).
+  void _persistMessage(ChatMessage msg) {
+    MessageStore.instance.saveMessage(msg).then((_) {}, onError: (_) {});
+  }
+
+  Future<void> _pickAndSendImage({bool fromCamera = false}) async {
+    if (_isSendingImage) return;
+    setState(() => _isSendingImage = true);
+
+    try {
+      final payload = fromCamera
+          ? await _imageService.pickFromCamera()
+          : await _imageService.pickFromGallery();
+
+      if (payload == null) {
+        setState(() => _isSendingImage = false);
+        return;
+      }
+
+      // Show local preview immediately
+      setState(() {
+        _messages.add(
+          _DisplayMessage.image(
+            sender: _nickname,
+            base64Data: payload.base64Data,
+            timestamp: DateTime.now(),
+            width: payload.width,
+            height: payload.height,
+            isOwn: true,
+          ),
+        );
+      });
+      _scrollToBottom();
+
+      // Send via Nostr
+      widget.chatService?.sendImageMessage(
+        payload.base64Data,
+        senderNickname: _nickname,
+        width: payload.width,
+        height: payload.height,
+      );
+
+      // Persist sent image
+      _persistMessage(
+        ChatMessage(
+          text: '[Image]',
+          senderNickname: _nickname,
+          senderPubKey: widget.chatService?.publicKeyHex ?? '',
+          timestamp: DateTime.now(),
+          channel: widget.channel,
+          isOwnMessage: true,
+          messageType: MessageType.image,
+          imageBase64: payload.base64Data,
+          imageWidth: payload.width,
+          imageHeight: payload.height,
+        ),
+      );
+
+      _addSystemMessage(
+        '📷 Image sent (${(payload.sizeBytes / 1024).toStringAsFixed(1)}KB)',
+      );
+    } catch (e) {
+      _addSystemMessage('❌ Failed to send image: $e');
+    } finally {
+      setState(() => _isSendingImage = false);
+    }
+  }
+
+  /// Toggle voice recording — start on first tap, stop & send on second.
+  void _toggleVoiceRecording() async {
+    if (_isRecording) {
+      // Stop recording and send
+      setState(() => _isRecording = false);
+      final payload = await _voiceService.stopRecording();
+      if (payload == null) {
+        _addSystemMessage('❌ Voice recording failed');
+        return;
+      }
+
+      // Add to local display
+      setState(() {
+        _messages.add(
+          _DisplayMessage.voice(
+            sender: _nickname,
+            base64Data: payload.base64Data,
+            timestamp: DateTime.now(),
+            durationSeconds: payload.durationSeconds,
+            isOwn: true,
+          ),
+        );
+      });
+      _scrollToBottom();
+
+      // Send via Nostr
+      widget.chatService?.sendVoiceMessage(
+        payload.base64Data,
+        senderNickname: _nickname,
+        duration: payload.durationSeconds,
+      );
+
+      // Persist
+      _persistMessage(
+        ChatMessage(
+          text: '[Voice Note]',
+          senderNickname: _nickname,
+          senderPubKey: widget.chatService?.publicKeyHex ?? '',
+          timestamp: DateTime.now(),
+          channel: widget.channel,
+          isOwnMessage: true,
+          messageType: MessageType.voice,
+          voiceBase64: payload.base64Data,
+          voiceDuration: payload.durationSeconds,
+        ),
+      );
+
+      _addSystemMessage(
+        '🎤 Voice note sent (${payload.durationSeconds.toStringAsFixed(1)}s, '
+        '${(payload.sizeBytes / 1024).toStringAsFixed(1)}KB)',
+      );
+    } else {
+      // Start recording
+      final path = await _voiceService.startRecording();
+      if (path != null) {
+        setState(() => _isRecording = true);
+        _addSystemMessage('🎤 Recording... tap mic again to stop');
+      } else {
+        _addSystemMessage('❌ Microphone permission denied');
+      }
+    }
   }
 
   void _onInputChanged() {
@@ -150,6 +362,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleSubmit(String text) {
     if (text.trim().isEmpty) return;
+
+    // Input validation
+    final validation = InputValidator.validateMessage(text.trim());
+    if (!validation.isValid) {
+      _addSystemMessage('⚠️ ${validation.error}');
+      return;
+    }
+
     _controller.clear();
     setState(() => _showSuggestions = false);
 
@@ -157,6 +377,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final cmd = CommandProcessor.parse(text);
     if (cmd != null) {
       _handleCommand(cmd);
+      return;
+    }
+
+    // Rate limiting
+    if (!_rateLimiter.tryConsume(widget.channel)) {
+      final cd = _rateLimiter.remainingCooldown(widget.channel);
+      final secs = cd?.inSeconds ?? 3;
+      _addSystemMessage('⏳ Slow down! Wait ${secs}s before sending again.');
       return;
     }
 
@@ -174,6 +402,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Send via Nostr relay
     widget.chatService?.sendMessage(text.trim(), senderNickname: _nickname);
+
+    // Persist sent message
+    _persistMessage(
+      ChatMessage(
+        text: text.trim(),
+        senderNickname: _nickname,
+        senderPubKey: widget.chatService?.publicKeyHex ?? '',
+        timestamp: msg.timestamp,
+        channel: widget.channel,
+        isOwnMessage: true,
+      ),
+    );
   }
 
   void _handleCommand(CommandResult cmd) {
@@ -296,6 +536,50 @@ class _ChatScreenState extends State<ChatScreen> {
             top: false,
             child: Row(
               children: [
+                // Image picker button
+                _isSendingImage
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : PopupMenuButton<String>(
+                        icon: Icon(
+                          Icons.add_photo_alternate_outlined,
+                          color: colorScheme.primary,
+                          size: 20,
+                        ),
+                        padding: EdgeInsets.zero,
+                        onSelected: (value) {
+                          if (value == 'gallery') {
+                            _pickAndSendImage();
+                          } else {
+                            _pickAndSendImage(fromCamera: true);
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'gallery',
+                            child: Row(
+                              children: [
+                                Icon(Icons.photo_library, size: 18),
+                                SizedBox(width: 8),
+                                Text('Gallery'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'camera',
+                            child: Row(
+                              children: [
+                                Icon(Icons.camera_alt, size: 18),
+                                SizedBox(width: 8),
+                                Text('Camera'),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                 Text(
                   '> ',
                   style: TextStyle(
@@ -320,6 +604,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     onSubmitted: _handleSubmit,
                     textInputAction: TextInputAction.send,
                   ),
+                ),
+                IconButton(
+                  icon: Icon(
+                    _isRecording ? Icons.stop_circle : Icons.mic_none,
+                    color: _isRecording ? Colors.red : colorScheme.primary,
+                  ),
+                  onPressed: _toggleVoiceRecording,
+                  iconSize: 20,
                 ),
                 IconButton(
                   icon: Icon(Icons.send, color: colorScheme.primary),
@@ -354,6 +646,61 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
+    // Image message
+    if (msg.isImage) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: msg.imageIsOwn
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
+          children: [
+            Text(
+              '[${_formatTime(msg.imageTimestamp!)}] <${msg.imageSender}>',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 2),
+            ImageBubble(
+              base64Data: msg.imageBase64!,
+              width: msg.imageWidth,
+              height: msg.imageHeight,
+              isOwnMessage: msg.imageIsOwn,
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Voice message
+    if (msg.isVoice) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '[${_formatTime(msg.voiceTimestamp!)}] <${msg.voiceSender}> 🎤',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 2),
+            VoiceNoteBubble(
+              base64Data: msg.voiceBase64!,
+              durationSeconds: msg.voiceDuration,
+              isOwn: msg.voiceIsOwn,
+            ),
+          ],
+        ),
+      );
+    }
+
     // Remote Nostr message
     if (msg.isRemote) {
       return Padding(
@@ -376,16 +723,20 @@ class _ChatScreenState extends State<ChatScreen> {
                   fontFamily: 'monospace',
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
-                  color: colorScheme.secondary,
+                  color: PeerColor.forNickname(
+                    msg.remoteSender!,
+                    isDark: theme.brightness == Brightness.dark,
+                  ),
                 ),
               ),
-              TextSpan(
-                text: msg.remoteContent,
-                style: TextStyle(
+              ...MessageFormatter.format(
+                msg.remoteContent ?? '',
+                baseStyle: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 13,
                   color: colorScheme.onSurface,
                 ),
+                codeBackground: colorScheme.surfaceContainerHighest,
               ),
             ],
           ),
@@ -450,13 +801,35 @@ class _DisplayMessage {
     : chatMessage = null,
       remoteSender = null,
       remoteContent = null,
-      remoteTimestamp = null;
+      remoteTimestamp = null,
+      imageBase64 = null,
+      imageSender = null,
+      imageTimestamp = null,
+      imageWidth = null,
+      imageHeight = null,
+      imageIsOwn = false,
+      voiceBase64 = null,
+      voiceSender = null,
+      voiceTimestamp = null,
+      voiceDuration = 0,
+      voiceIsOwn = false;
 
   _DisplayMessage.chat(this.chatMessage)
     : systemText = null,
       remoteSender = null,
       remoteContent = null,
-      remoteTimestamp = null;
+      remoteTimestamp = null,
+      imageBase64 = null,
+      imageSender = null,
+      imageTimestamp = null,
+      imageWidth = null,
+      imageHeight = null,
+      imageIsOwn = false,
+      voiceBase64 = null,
+      voiceSender = null,
+      voiceTimestamp = null,
+      voiceDuration = 0,
+      voiceIsOwn = false;
 
   _DisplayMessage.remote({
     required String sender,
@@ -466,7 +839,65 @@ class _DisplayMessage {
        remoteContent = content,
        remoteTimestamp = timestamp,
        chatMessage = null,
-       systemText = null;
+       systemText = null,
+       imageBase64 = null,
+       imageSender = null,
+       imageTimestamp = null,
+       imageWidth = null,
+       imageHeight = null,
+       imageIsOwn = false,
+       voiceBase64 = null,
+       voiceSender = null,
+       voiceTimestamp = null,
+       voiceDuration = 0,
+       voiceIsOwn = false;
+
+  _DisplayMessage.image({
+    required String sender,
+    required String base64Data,
+    required DateTime timestamp,
+    int? width,
+    int? height,
+    bool isOwn = false,
+  }) : imageSender = sender,
+       imageBase64 = base64Data,
+       imageTimestamp = timestamp,
+       imageWidth = width,
+       imageHeight = height,
+       imageIsOwn = isOwn,
+       chatMessage = null,
+       systemText = null,
+       remoteSender = null,
+       remoteContent = null,
+       remoteTimestamp = null,
+       voiceBase64 = null,
+       voiceSender = null,
+       voiceTimestamp = null,
+       voiceDuration = 0,
+       voiceIsOwn = false;
+
+  _DisplayMessage.voice({
+    required String sender,
+    required String base64Data,
+    required DateTime timestamp,
+    double durationSeconds = 0,
+    bool isOwn = false,
+  }) : voiceSender = sender,
+       voiceBase64 = base64Data,
+       voiceTimestamp = timestamp,
+       voiceDuration = durationSeconds,
+       voiceIsOwn = isOwn,
+       chatMessage = null,
+       systemText = null,
+       remoteSender = null,
+       remoteContent = null,
+       remoteTimestamp = null,
+       imageBase64 = null,
+       imageSender = null,
+       imageTimestamp = null,
+       imageWidth = null,
+       imageHeight = null,
+       imageIsOwn = false;
 
   final BitchatMessage? chatMessage;
   final String? systemText;
@@ -474,6 +905,23 @@ class _DisplayMessage {
   final String? remoteContent;
   final DateTime? remoteTimestamp;
 
+  // Image message fields
+  final String? imageBase64;
+  final String? imageSender;
+  final DateTime? imageTimestamp;
+  final int? imageWidth;
+  final int? imageHeight;
+  final bool imageIsOwn;
+
+  // Voice message fields
+  final String? voiceBase64;
+  final String? voiceSender;
+  final DateTime? voiceTimestamp;
+  final double voiceDuration;
+  final bool voiceIsOwn;
+
   bool get isSystem => systemText != null;
   bool get isRemote => remoteSender != null;
+  bool get isImage => imageBase64 != null;
+  bool get isVoice => voiceBase64 != null;
 }

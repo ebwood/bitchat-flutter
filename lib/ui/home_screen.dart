@@ -1,8 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:bitchat/services/identity_service.dart';
 import 'package:bitchat/services/nostr_chat_service.dart';
+import 'package:bitchat/services/private_chat_service.dart';
 import 'package:bitchat/ui/chat_screen.dart';
+import 'package:bitchat/ui/contacts_screen.dart';
+import 'package:bitchat/ui/debug_panel.dart';
+import 'package:bitchat/ui/dm_screen.dart';
 import 'package:bitchat/ui/peer_list_screen.dart';
 import 'package:bitchat/ui/settings_screen.dart';
 
@@ -29,6 +34,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Nostr integration
   late NostrChatService _chatService;
+  PrivateChatService? _privateChatService;
+  final IdentityService _identityService = IdentityService();
   NostrConnectionStatus _connectionStatus = NostrConnectionStatus.disconnected;
   StreamSubscription<NostrConnectionStatus>? _statusSub;
 
@@ -47,12 +54,25 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     await _chatService.initialize(nickname: _nickname);
+
+    // Initialize private DM service
+    if (_chatService.isInitialized) {
+      _privateChatService = PrivateChatService(
+        relayManager: _chatService.relayManager,
+        privateKeyHex: _chatService.privateKeyHex,
+        publicKeyHex: _chatService.publicKeyHex,
+        nickname: _nickname,
+      );
+      _privateChatService!.subscribe();
+    }
+
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _statusSub?.cancel();
+    _privateChatService?.dispose();
     _chatService.dispose();
     super.dispose();
   }
@@ -64,6 +84,59 @@ class _HomeScreenState extends State<HomeScreen> {
   void _switchChannel(String channel) {
     setState(() => _currentChannel = channel);
     _chatService.switchChannel(_channelTagFromName(channel));
+  }
+
+  /// Show dialog to enter a peer's public key and start a DM.
+  void _startDmDialog(BuildContext context) {
+    if (_privateChatService == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Nostr not connected yet')));
+      return;
+    }
+
+    final pubkeyController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New DM'),
+        content: TextField(
+          controller: pubkeyController,
+          decoration: const InputDecoration(
+            labelText: 'Peer public key (hex)',
+            hintText: '64 character hex...',
+            border: OutlineInputBorder(),
+          ),
+          maxLength: 64,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final pubkey = pubkeyController.text.trim();
+              if (pubkey.length == 64) {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DmScreen(
+                      privateChatService: _privateChatService!,
+                      peerPubKey: pubkey,
+                      ownNickname: _nickname,
+                    ),
+                  ),
+                );
+              }
+            },
+            child: const Text('Start Chat'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -186,6 +259,15 @@ class _HomeScreenState extends State<HomeScreen> {
               height: 1,
             ),
             _DrawerAction(
+              icon: Icons.mail_lock_outlined,
+              label: 'Direct Messages',
+              colorScheme: colorScheme,
+              onTap: () {
+                Navigator.pop(context);
+                _startDmDialog(context);
+              },
+            ),
+            _DrawerAction(
               icon: Icons.people_outline,
               label: 'Peers',
               colorScheme: colorScheme,
@@ -194,6 +276,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const PeerListScreen()),
+                );
+              },
+            ),
+            _DrawerAction(
+              icon: Icons.contacts_outlined,
+              label: 'Contacts',
+              colorScheme: colorScheme,
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ContactsScreen(
+                      identityService: _identityService,
+                      myPublicKeyHex: _chatService.publicKeyHex,
+                    ),
+                  ),
                 );
               },
             ),
@@ -214,6 +313,23 @@ class _HomeScreenState extends State<HomeScreen> {
                         setState(() => _nickname = nick);
                         _chatService.setNickname(nick);
                       },
+                    ),
+                  ),
+                );
+              },
+            ),
+            _DrawerAction(
+              icon: Icons.bug_report_outlined,
+              label: 'Debug',
+              colorScheme: colorScheme,
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DebugPanel(
+                      relayStatus: _connectionStatus.name,
+                      publicKeyHex: _chatService.publicKeyHex,
                     ),
                   ),
                 );

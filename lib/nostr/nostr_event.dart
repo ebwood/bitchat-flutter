@@ -10,10 +10,11 @@ class NostrKind {
 
   static const int metadata = 0;
   static const int textNote = 1;
-  static const int directMessage = 14;   // NIP-17 direct message
-  static const int fileMessage = 15;     // NIP-17 file message
-  static const int seal = 13;            // NIP-17 sealed event
-  static const int giftWrap = 1059;      // NIP-17 gift wrap
+  static const int encryptedDM = 4; // NIP-04 encrypted direct message
+  static const int directMessage = 14; // NIP-17 direct message
+  static const int fileMessage = 15; // NIP-17 file message
+  static const int seal = 13; // NIP-17 sealed event
+  static const int giftWrap = 1059; // NIP-17 gift wrap
   static const int ephemeralEvent = 20000; // Geohash channels
   static const int geohashPresence = 20001; // Geohash presence heartbeat
 }
@@ -166,14 +167,14 @@ class NostrEvent {
 
   /// Convert to JSON map.
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'pubkey': pubkey,
-        'created_at': createdAt,
-        'kind': kind,
-        'tags': tags,
-        'content': content,
-        if (sig != null) 'sig': sig,
-      };
+    'id': id,
+    'pubkey': pubkey,
+    'created_at': createdAt,
+    'kind': kind,
+    'tags': tags,
+    'content': content,
+    if (sig != null) 'sig': sig,
+  };
 
   /// Convert to JSON string.
   String toJsonString() => jsonEncode(toJson());
@@ -218,10 +219,9 @@ class NostrCrypto {
     _ensureRandomInitialized();
 
     final keyGen = ECKeyGenerator()
-      ..init(ParametersWithRandom(
-        ECKeyGeneratorParameters(_params),
-        _secureRandom,
-      ));
+      ..init(
+        ParametersWithRandom(ECKeyGeneratorParameters(_params), _secureRandom),
+      );
 
     final pair = keyGen.generateKeyPair();
     final privKey = pair.privateKey as ECPrivateKey;

@@ -1,5 +1,5 @@
 name: bitchat
-description: "A new Flutter project."
+description: "A secure, decentralized, peer-to-peer messaging app — BLE mesh + Nostr relay, cross-platform."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -39,6 +39,12 @@ dependencies:
   pointycastle: ^4.0.0
   web_socket_channel: ^3.0.3
   flutter_blue_plus: ^2.2.1
+  image_picker: ^1.1.2
+  image: ^4.5.3
+  sqflite: ^2.4.1
+  path: ^1.9.0
+  record: ^6.0.0
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:
