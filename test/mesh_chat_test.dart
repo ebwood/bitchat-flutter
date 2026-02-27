@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:bitchat/ble/ble_native_channel.dart';
 import 'package:bitchat/models/bitchat_message.dart';
 import 'package:bitchat/models/bitchat_packet.dart';
 import 'package:bitchat/models/message_type.dart' as proto;
@@ -9,6 +10,10 @@ import 'package:bitchat/models/peer_id.dart';
 import 'package:bitchat/services/mesh_chat_service.dart';
 
 void main() {
+  setUpAll(() {
+    // Disable native macOS BLE channel in test environment
+    BLENativeChannel.overrideSupported = false;
+  });
   group('MeshChatService', () {
     test('initial state is disconnected', () {
       final svc = MeshChatService(nickname: 'alice');

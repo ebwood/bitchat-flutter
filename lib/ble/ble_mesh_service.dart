@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../models/peer_id.dart';
 import '../protocol/binary_protocol.dart';
 import '../models/bitchat_packet.dart';
+import 'ble_native_channel.dart';
 
 /// BLE service constants matching iOS/Android.
 class BLEConstants {
@@ -63,30 +64,35 @@ typedef BLEMessageHandler =
 
 /// Core BLE mesh service.
 ///
-/// Manages scanning for peers, connecting, service/characteristic discovery,
-/// message sending via write, and message receiving via notifications.
-///
-/// Note: flutter_blue_plus only supports the Central role. Peripheral
-/// (advertising) role requires platform channels — stubbed for now.
+/// On macOS, uses native CoreBluetooth via platform channel (BLEPlugin.swift).
+/// On iOS/Android, uses flutter_blue_plus.
 class BLEMeshService {
   BLEMeshService({required this.myPeerID, this.nickname = 'anon'});
 
   final PeerID myPeerID;
   String nickname;
 
+  /// Whether we're using the native macOS BLE channel.
+  bool get _useNative => BLENativeChannel.isSupported;
+  BLENativeChannel get _native => BLENativeChannel.instance;
+
   // --- State ---
   final Map<String, BLEPeerInfo> _peers = {};
-  final Map<String, BluetoothDevice> _connectedDevices = {};
-  final Map<String, BluetoothCharacteristic> _characteristics = {};
+  final Map<String, BluetoothDevice> _connectedDevices = {}; // FBP only
+  final Map<String, BluetoothCharacteristic> _fbpCharacteristics =
+      {}; // FBP only
+  final Set<String> _nativeConnected = {}; // Native only
   final Set<String> _seenMessageIds = {};
-  final Set<String> _connectingDevices = {}; // Currently attempting connection
-  final Map<String, DateTime> _failedDevices = {}; // Cooldown after failure
+  final Set<String> _connectingDevices = {};
+  final Map<String, DateTime> _failedDevices = {};
 
   BLEMeshStatus _status = BLEMeshStatus.idle;
   BLEMeshStatus get status => _status;
   bool _disposed = false;
 
   StreamSubscription? _scanSubscription;
+  StreamSubscription? _connectionSubscription;
+  StreamSubscription? _dataSubscription;
   Timer? _maintenanceTimer;
 
   // --- Event streams ---
@@ -109,68 +115,35 @@ class BLEMeshService {
   // Lifecycle
   // ---------------------------------------------------------------------------
 
-  /// Start scanning and advertising.
+  /// Start scanning and connecting.
   Future<void> start() async {
-    // Check Bluetooth state — skip `unknown` on macOS
-    try {
-      final state = await FlutterBluePlus.adapterState
-          .where((s) => s != BluetoothAdapterState.unknown)
-          .first
-          .timeout(const Duration(seconds: 5));
-      if (state != BluetoothAdapterState.on) {
-        _updateStatus(BLEMeshStatus.error);
-        return;
-      }
-    } catch (_) {
-      _updateStatus(BLEMeshStatus.error);
-      return;
+    if (_useNative) {
+      await _startNative();
+    } else {
+      await _startFBP();
     }
-
-    _updateStatus(BLEMeshStatus.scanning);
-
-    // Start scanning for peers advertising our service UUID
-    _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
-      for (final r in results) {
-        _handleScanResult(r);
-      }
-    }, onError: (e) => _updateStatus(BLEMeshStatus.error));
-
-    await FlutterBluePlus.startScan(
-      withServices: [BLEConstants.serviceUUID],
-      timeout: BLEConstants.scanTimeout,
-      continuousUpdates: true,
-    );
-
-    // Periodic maintenance (cleanup stale peers, re-scan)
-    _maintenanceTimer = Timer.periodic(
-      BLEConstants.maintenanceInterval,
-      (_) => _performMaintenance(),
-    );
-  }
-
-  /// Restart BLE scanning (e.g. after a connection attempt paused it).
-  void _restartScan() {
-    if (_disposed) return;
-    FlutterBluePlus.startScan(
-      withServices: [BLEConstants.serviceUUID],
-      timeout: BLEConstants.scanTimeout,
-      continuousUpdates: true,
-    );
   }
 
   /// Stop all BLE operations.
   Future<void> stop() async {
     _maintenanceTimer?.cancel();
     _scanSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _dataSubscription?.cancel();
 
-    await FlutterBluePlus.stopScan();
-
-    // Disconnect all
-    for (final device in _connectedDevices.values) {
-      await device.disconnect();
+    if (_useNative) {
+      await _native.stopScan();
+      await _native.disconnectAll();
+      _nativeConnected.clear();
+    } else {
+      await FlutterBluePlus.stopScan();
+      for (final device in _connectedDevices.values) {
+        await device.disconnect();
+      }
+      _connectedDevices.clear();
+      _fbpCharacteristics.clear();
     }
-    _connectedDevices.clear();
-    _characteristics.clear();
+
     _connectingDevices.clear();
     _failedDevices.clear();
     _peers.clear();
@@ -192,14 +165,59 @@ class BLEMeshService {
   }
 
   // ---------------------------------------------------------------------------
-  // Scanning & Connection
+  // Native macOS path
   // ---------------------------------------------------------------------------
 
-  void _handleScanResult(ScanResult result) {
-    final deviceId = result.device.remoteId.str;
+  Future<void> _startNative() async {
+    final adapterOn = await _native.getAdapterState();
+    if (!adapterOn) {
+      debugPrint('[ble-mesh] Native: Bluetooth not on, waiting...');
+      // Listen for adapter changes
+      _native.setAdapterStateCallback((state) {
+        debugPrint('[ble-mesh] Native: adapter state → $state');
+        if (state == 'on' && _status != BLEMeshStatus.scanning) {
+          _startNativeScan();
+        }
+      });
+      // Don't error — wait for adapter
+      return;
+    }
+
+    _startNativeScan();
+  }
+
+  void _startNativeScan() async {
+    debugPrint('[ble-mesh] Native: starting scan');
+    _updateStatus(BLEMeshStatus.scanning);
+
+    // Scan results
+    _scanSubscription = _native.scanResults.listen((result) {
+      _handleNativeScanResult(result);
+    });
+
+    // Connection events
+    _connectionSubscription = _native.connectionEvents.listen((event) {
+      _handleNativeConnectionEvent(event);
+    });
+
+    // Data events
+    _dataSubscription = _native.dataEvents.listen((event) {
+      _handleReceivedData(event.data, event.deviceId);
+    });
+
+    await _native.startScan();
+
+    // Periodic maintenance
+    _maintenanceTimer = Timer.periodic(
+      BLEConstants.maintenanceInterval,
+      (_) => _performMaintenance(),
+    );
+  }
+
+  void _handleNativeScanResult(BLEScanResult result) {
+    final deviceId = result.deviceId;
     final isNew = !_peers.containsKey(deviceId);
 
-    // Update or create peer info
     if (_peers.containsKey(deviceId)) {
       _peers[deviceId]!
         ..rssi = result.rssi
@@ -212,19 +230,151 @@ class BLEMeshService {
       );
     }
 
-    // Only log first discovery to reduce noise
+    if (isNew) {
+      debugPrint(
+        '[ble-mesh] 📡 Native: new device $deviceId rssi=${result.rssi}',
+      );
+    }
+
+    _peerController.add(peers);
+
+    // Auto-connect if not already connected or connecting
+    if (_nativeConnected.contains(deviceId)) return;
+    if (_connectingDevices.contains(deviceId)) return;
+
+    // Skip if recently failed (30s cooldown)
+    final failedAt = _failedDevices[deviceId];
+    if (failedAt != null) {
+      final ago = DateTime.now().difference(failedAt).inSeconds;
+      if (ago < 30) return;
+      debugPrint('[ble-mesh] 🔄 Native: retrying $deviceId after cooldown');
+    }
+
+    _connectingDevices.add(deviceId);
+    debugPrint('[ble-mesh] Native: connecting to $deviceId ...');
+    _native.connect(deviceId).catchError((e) {
+      debugPrint('[ble-mesh] ❌ Native: connect call failed: $e');
+      _connectingDevices.remove(deviceId);
+      _failedDevices[deviceId] = DateTime.now();
+    });
+  }
+
+  void _handleNativeConnectionEvent(BLEConnectionEvent event) {
+    final deviceId = event.deviceId;
+    debugPrint(
+      '[ble-mesh] Native: connection event $deviceId → ${event.state}',
+    );
+
+    switch (event.state) {
+      case 'connected':
+        // Connection established, waiting for service/characteristic discovery
+        _connectingDevices.remove(deviceId);
+        break;
+
+      case 'ready':
+        // Fully ready — service discovered, notifications subscribed
+        _connectingDevices.remove(deviceId);
+        _failedDevices.remove(deviceId);
+        _nativeConnected.add(deviceId);
+        _peers[deviceId]?.isConnected = true;
+        _peerController.add(peers);
+        _updateStatus(BLEMeshStatus.connected);
+        debugPrint('[ble-mesh] ✅ Native: fully connected to $deviceId');
+        break;
+
+      case 'disconnected':
+        _nativeConnected.remove(deviceId);
+        _connectingDevices.remove(deviceId);
+        _peers[deviceId]?.isConnected = false;
+        _peerController.add(peers);
+        if (connectedPeerCount == 0) {
+          _updateStatus(BLEMeshStatus.scanning);
+        }
+        break;
+
+      case 'failed':
+      case 'timeout':
+        _connectingDevices.remove(deviceId);
+        _failedDevices[deviceId] = DateTime.now();
+        debugPrint('[ble-mesh] ❌ Native: ${event.state} for $deviceId');
+        break;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // flutter_blue_plus path (iOS/Android)
+  // ---------------------------------------------------------------------------
+
+  Future<void> _startFBP() async {
+    // Check Bluetooth state — skip `unknown` on macOS
+    try {
+      final state = await FlutterBluePlus.adapterState
+          .where((s) => s != BluetoothAdapterState.unknown)
+          .first
+          .timeout(const Duration(seconds: 5));
+      if (state != BluetoothAdapterState.on) {
+        _updateStatus(BLEMeshStatus.error);
+        return;
+      }
+    } catch (_) {
+      _updateStatus(BLEMeshStatus.error);
+      return;
+    }
+
+    _updateStatus(BLEMeshStatus.scanning);
+
+    _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
+      for (final r in results) {
+        _handleFBPScanResult(r);
+      }
+    }, onError: (e) => _updateStatus(BLEMeshStatus.error));
+
+    await FlutterBluePlus.startScan(
+      withServices: [BLEConstants.serviceUUID],
+      timeout: BLEConstants.scanTimeout,
+      continuousUpdates: true,
+    );
+
+    _maintenanceTimer = Timer.periodic(
+      BLEConstants.maintenanceInterval,
+      (_) => _performMaintenance(),
+    );
+  }
+
+  void _restartScanFBP() {
+    if (_disposed) return;
+    FlutterBluePlus.startScan(
+      withServices: [BLEConstants.serviceUUID],
+      timeout: BLEConstants.scanTimeout,
+      continuousUpdates: true,
+    );
+  }
+
+  void _handleFBPScanResult(ScanResult result) {
+    final deviceId = result.device.remoteId.str;
+    final isNew = !_peers.containsKey(deviceId);
+
+    if (_peers.containsKey(deviceId)) {
+      _peers[deviceId]!
+        ..rssi = result.rssi
+        ..lastSeen = DateTime.now();
+    } else {
+      _peers[deviceId] = BLEPeerInfo(
+        deviceId: deviceId,
+        peerID: PeerID(deviceId.substring(0, 16).padRight(16, '0')),
+        rssi: result.rssi,
+      );
+    }
+
     if (isNew) {
       debugPrint('[ble-mesh] 📡 New device: $deviceId  rssi=${result.rssi}');
     }
 
     _peerController.add(peers);
 
-    // Auto-connect if not already connected or connecting
     if (_connectedDevices.containsKey(deviceId)) return;
+    if (_connectingDevices.contains(deviceId)) return;
 
-    if (_connectingDevices.contains(deviceId)) return; // already attempting
-
-    // Skip if recently failed (30s cooldown)
     final failedAt = _failedDevices[deviceId];
     if (failedAt != null) {
       final ago = DateTime.now().difference(failedAt).inSeconds;
@@ -236,22 +386,19 @@ class BLEMeshService {
         }
         return;
       }
-      // Cooldown expired — allow retry
       debugPrint('[ble-mesh] 🔄 Retrying $deviceId after 30s cooldown');
     }
 
-    _connectToDevice(result.device);
+    _connectToDeviceFBP(result.device);
   }
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
+  Future<void> _connectToDeviceFBP(BluetoothDevice device) async {
     final deviceId = device.remoteId.str;
 
     try {
       _connectingDevices.add(deviceId);
       debugPrint('[ble-mesh] Connecting to $deviceId ...');
 
-      // macOS CoreBluetooth cannot reliably connect while scanning.
-      // Pause scan → connect → resume scan.
       await FlutterBluePlus.stopScan();
       await Future.delayed(const Duration(milliseconds: 200));
 
@@ -263,7 +410,6 @@ class BLEMeshService {
 
       debugPrint('[ble-mesh] Connected to $deviceId — requesting MTU');
 
-      // Negotiate MTU before service discovery (matching Android flow)
       try {
         await device.requestMtu(512);
       } catch (_) {
@@ -276,7 +422,6 @@ class BLEMeshService {
       _failedDevices.remove(deviceId);
       _connectedDevices[deviceId] = device;
 
-      // Discover services
       debugPrint('[ble-mesh] Discovering services on $deviceId ...');
       final services = await device.discoverServices();
       for (final service in services) {
@@ -284,15 +429,13 @@ class BLEMeshService {
           debugPrint('[ble-mesh] Found bitchat service on $deviceId');
           for (final char in service.characteristics) {
             if (char.characteristicUuid == BLEConstants.characteristicUUID) {
-              _characteristics[deviceId] = char;
+              _fbpCharacteristics[deviceId] = char;
 
-              // Subscribe to notifications
               await char.setNotifyValue(true);
               char.onValueReceived.listen((data) {
                 _handleReceivedData(Uint8List.fromList(data), deviceId);
               });
 
-              // Update peer as connected
               _peers[deviceId]?.isConnected = true;
               _peerController.add(peers);
               _updateStatus(BLEMeshStatus.connected);
@@ -302,27 +445,24 @@ class BLEMeshService {
         }
       }
 
-      // Listen for disconnection
       device.connectionState.listen((state) {
         if (state == BluetoothConnectionState.disconnected) {
-          _handleDisconnection(deviceId);
+          _handleDisconnectionFBP(deviceId);
         }
       });
     } catch (e) {
-      // Connection failed — record failure time for cooldown
       debugPrint('[ble-mesh] ❌ Connection failed to $deviceId: $e');
       _connectingDevices.remove(deviceId);
       _failedDevices[deviceId] = DateTime.now();
       _connectedDevices.remove(deviceId);
     } finally {
-      // Always restart scanning after connection attempt
-      _restartScan();
+      _restartScanFBP();
     }
   }
 
-  void _handleDisconnection(String deviceId) {
+  void _handleDisconnectionFBP(String deviceId) {
     _connectedDevices.remove(deviceId);
-    _characteristics.remove(deviceId);
+    _fbpCharacteristics.remove(deviceId);
     _peers[deviceId]?.isConnected = false;
     _peerController.add(peers);
 
@@ -341,12 +481,20 @@ class BLEMeshService {
     if (data == null) return;
     final fragments = _fragment(data);
 
-    for (final entry in _characteristics.entries) {
-      for (final fragment in fragments) {
-        try {
-          await entry.value.write(fragment.toList(), withoutResponse: true);
-        } catch (_) {
-          // Write failed — peer may have disconnected
+    if (_useNative) {
+      for (final deviceId in _nativeConnected) {
+        for (final fragment in fragments) {
+          try {
+            await _native.write(deviceId, fragment);
+          } catch (_) {}
+        }
+      }
+    } else {
+      for (final entry in _fbpCharacteristics.entries) {
+        for (final fragment in fragments) {
+          try {
+            await entry.value.write(fragment.toList(), withoutResponse: true);
+          } catch (_) {}
         }
       }
     }
@@ -354,16 +502,21 @@ class BLEMeshService {
 
   /// Send a packet to a specific peer.
   Future<bool> sendPacketToPeer(BitchatPacket packet, String deviceId) async {
-    final char = _characteristics[deviceId];
-    if (char == null) return false;
-
     final data = BinaryProtocol.encode(packet);
     if (data == null) return false;
     final fragments = _fragment(data);
 
     try {
-      for (final fragment in fragments) {
-        await char.write(fragment.toList(), withoutResponse: true);
+      if (_useNative) {
+        for (final fragment in fragments) {
+          await _native.write(deviceId, fragment);
+        }
+      } else {
+        final char = _fbpCharacteristics[deviceId];
+        if (char == null) return false;
+        for (final fragment in fragments) {
+          await char.write(fragment.toList(), withoutResponse: true);
+        }
       }
       return true;
     } catch (_) {
@@ -375,13 +528,11 @@ class BLEMeshService {
   // Message receiving & relay
   // ---------------------------------------------------------------------------
 
-  /// Reassembly buffers for fragmented messages.
   final Map<String, List<Uint8List>> _reassemblyBuffers = {};
 
   void _handleReceivedData(Uint8List data, String senderDeviceId) {
     if (data.isEmpty) return;
 
-    // Check fragment header
     if (_isFragment(data)) {
       _handleFragment(data, senderDeviceId);
       return;
@@ -403,12 +554,10 @@ class BLEMeshService {
       if (_seenMessageIds.contains(dedupId)) return;
       _seenMessageIds.add(dedupId);
 
-      // Cap dedup cache
       if (_seenMessageIds.length > 5000) {
         _seenMessageIds.remove(_seenMessageIds.first);
       }
 
-      // Emit to listeners
       _packetController.add(packet);
 
       // Relay with TTL decrement
@@ -424,12 +573,9 @@ class BLEMeshService {
         );
         _relayPacket(relayPacket, excludeDeviceId: senderDeviceId);
       }
-    } catch (_) {
-      // Malformed packet
-    }
+    } catch (_) {}
   }
 
-  /// Relay a packet to all peers except the sender.
   Future<void> _relayPacket(
     BitchatPacket packet, {
     required String excludeDeviceId,
@@ -438,12 +584,23 @@ class BLEMeshService {
     if (data == null) return;
     final fragments = _fragment(data);
 
-    for (final entry in _characteristics.entries) {
-      if (entry.key == excludeDeviceId) continue;
-      for (final fragment in fragments) {
-        try {
-          await entry.value.write(fragment.toList(), withoutResponse: true);
-        } catch (_) {}
+    if (_useNative) {
+      for (final deviceId in _nativeConnected) {
+        if (deviceId == excludeDeviceId) continue;
+        for (final fragment in fragments) {
+          try {
+            await _native.write(deviceId, fragment);
+          } catch (_) {}
+        }
+      }
+    } else {
+      for (final entry in _fbpCharacteristics.entries) {
+        if (entry.key == excludeDeviceId) continue;
+        for (final fragment in fragments) {
+          try {
+            await entry.value.write(fragment.toList(), withoutResponse: true);
+          } catch (_) {}
+        }
       }
     }
   }
@@ -452,7 +609,6 @@ class BLEMeshService {
   // Fragmentation
   // ---------------------------------------------------------------------------
 
-  /// Fragment header: [0xBB] [fragment_index:2] [total:2] [message_id:4]
   static const int _fragmentHeaderSize = 9;
 
   List<Uint8List> _fragment(Uint8List data) {
@@ -471,7 +627,7 @@ class BLEMeshService {
       final chunk = data.sublist(start, end);
 
       final header = ByteData(9);
-      header.setUint8(0, 0xBB); // fragment marker
+      header.setUint8(0, 0xBB);
       header.setUint16(1, i);
       header.setUint16(3, totalFragments);
       header.setUint32(5, messageId);
@@ -502,7 +658,6 @@ class BLEMeshService {
       buffer[index] = payload;
     }
 
-    // Check if complete
     if (buffer.every((b) => b.isNotEmpty)) {
       final complete = Uint8List.fromList(buffer.expand((b) => b).toList());
       _reassemblyBuffers.remove(key);
@@ -515,7 +670,6 @@ class BLEMeshService {
   // ---------------------------------------------------------------------------
 
   void _performMaintenance() {
-    // Remove stale peers
     final staleKeys = _peers.entries
         .where((e) => e.value.isStale && !e.value.isConnected)
         .map((e) => e.key)
@@ -524,8 +678,7 @@ class BLEMeshService {
       _peers.remove(key);
     }
 
-    // Clean old reassembly buffers (>30s old)
-    _reassemblyBuffers.removeWhere((key, _) => true); // simplified
+    _reassemblyBuffers.removeWhere((key, _) => true);
 
     if (staleKeys.isNotEmpty) {
       _peerController.add(peers);
@@ -533,11 +686,15 @@ class BLEMeshService {
 
     // Restart scan if no peers connected
     if (connectedPeerCount == 0 && _status != BLEMeshStatus.error) {
-      FlutterBluePlus.startScan(
-        withServices: [BLEConstants.serviceUUID],
-        timeout: BLEConstants.scanTimeout,
-        continuousUpdates: true,
-      );
+      if (_useNative) {
+        _native.startScan();
+      } else {
+        FlutterBluePlus.startScan(
+          withServices: [BLEConstants.serviceUUID],
+          timeout: BLEConstants.scanTimeout,
+          continuousUpdates: true,
+        );
+      }
     }
   }
 
