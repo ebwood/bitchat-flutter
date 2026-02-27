@@ -172,23 +172,58 @@ class BLEMeshService {
     final adapterOn = await _native.getAdapterState();
     if (!adapterOn) {
       debugPrint('[ble-mesh] Native: Bluetooth not on, waiting...');
-      // Listen for adapter changes
-      _native.setAdapterStateCallback((state) {
-        debugPrint('[ble-mesh] Native: adapter state → $state');
-        if (state == 'on' && _status != BLEMeshStatus.scanning) {
-          _startNativeScan();
-        }
-      });
-      // Don't error — wait for adapter
+      _native.setMethodCallHandler(
+        onAdapterState: (state) {
+          debugPrint('[ble-mesh] Native: adapter state → $state');
+          if (state == 'on' && _status != BLEMeshStatus.scanning) {
+            _startNativeScan();
+          }
+        },
+        onPeerFound: _handleNativePeerDiscovered,
+      );
       return;
     }
 
     _startNativeScan();
   }
 
+  /// Called when the native plugin decodes an AnnouncementPacket from a peer.
+  void _handleNativePeerDiscovered(
+    String peerID,
+    String peerNickname,
+    String deviceId,
+  ) {
+    debugPrint(
+      '[ble-mesh] 👋 Peer discovered: $peerNickname ($peerID) via $deviceId',
+    );
+    if (_peers.containsKey(deviceId)) {
+      _peers[deviceId]!
+        ..nickname = peerNickname
+        ..lastSeen = DateTime.now();
+    } else {
+      _peers[deviceId] = BLEPeerInfo(
+        deviceId: deviceId,
+        peerID: PeerID(peerID),
+        nickname: peerNickname,
+      );
+    }
+    _peerController.add(peers);
+  }
+
   void _startNativeScan() async {
     debugPrint('[ble-mesh] Native: starting scan');
     _updateStatus(BLEMeshStatus.scanning);
+
+    // Set nickname on native side
+    await _native.setNickname(nickname);
+
+    // Set up method call handler for peer discovery
+    _native.setMethodCallHandler(
+      onAdapterState: (state) {
+        debugPrint('[ble-mesh] Native: adapter state → $state');
+      },
+      onPeerFound: _handleNativePeerDiscovered,
+    );
 
     // Scan results
     _scanSubscription = _native.scanResults.listen((result) {
@@ -200,9 +235,27 @@ class BLEMeshService {
       _handleNativeConnectionEvent(event);
     });
 
-    // Data events
+    // Data events — native plugin sends parsed BLEMessageEvent for chat msgs
     _dataSubscription = _native.dataEvents.listen((event) {
-      _handleReceivedData(event.data, event.deviceId);
+      if (event is BLEMessageEvent) {
+        // Already decoded by native BinaryProtocol — emit as BitchatPacket
+        final msg = event;
+        if (!msg.isOwnMessage) {
+          final payloadBytes = Uint8List.fromList(msg.content.codeUnits);
+          final senderBytes = _hexStringToBytes(msg.senderPeerID);
+          final packet = BitchatPacket(
+            type: 0x02, // message
+            senderID: senderBytes,
+            timestamp: msg.timestamp.millisecondsSinceEpoch,
+            payload: payloadBytes,
+            ttl: 0, // already processed
+          );
+          _packetController.add(packet);
+        }
+      } else {
+        // Legacy raw data
+        _handleReceivedData(event.data, event.deviceId);
+      }
     });
 
     await _native.startScan();
@@ -212,6 +265,15 @@ class BLEMeshService {
       BLEConstants.maintenanceInterval,
       (_) => _performMaintenance(),
     );
+  }
+
+  /// Convert hex string to bytes.
+  Uint8List _hexStringToBytes(String hex) {
+    final result = <int>[];
+    for (var i = 0; i + 1 < hex.length; i += 2) {
+      result.add(int.parse(hex.substring(i, i + 2), radix: 16));
+    }
+    return Uint8List.fromList(result);
   }
 
   void _handleNativeScanResult(BLEScanResult result) {
@@ -476,7 +538,18 @@ class BLEMeshService {
   // ---------------------------------------------------------------------------
 
   /// Send a packet to all connected peers (broadcast).
+  ///
+  /// On native macOS, uses the native plugin's sendMessage for chat messages
+  /// (which handles BinaryProtocol encoding internally), or raw write for
+  /// other packet types.
   Future<void> broadcastPacket(BitchatPacket packet) async {
+    if (_useNative && packet.type == 0x02) {
+      // Chat message — let native handle BinaryProtocol encoding
+      final content = String.fromCharCodes(packet.payload);
+      await _native.sendMessage(content, nickname: nickname);
+      return;
+    }
+
     final data = BinaryProtocol.encode(packet);
     if (data == null) return;
     final fragments = _fragment(data);

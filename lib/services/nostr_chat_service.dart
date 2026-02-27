@@ -200,6 +200,16 @@ class NostrChatService {
     _subscribeToChannel(channelTag);
   }
 
+  /// Pause receiving messages (e.g. when switching to Mesh mode).
+  void pause() {
+    _relayManager.unsubscribe('bitchat-channel');
+  }
+
+  /// Resume receiving messages.
+  void resume() {
+    _subscribeToChannel(_channelTag);
+  }
+
   void _subscribeToChannel(String channelTag) {
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
 

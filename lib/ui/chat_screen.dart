@@ -89,8 +89,20 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Load persisted history then subscribe to live messages
     _loadHistory();
-    _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
-    _meshMessageSub = widget.meshChatService?.messages.listen(_onNostrMessage);
+    _updateSubscriptions();
+  }
+
+  void _updateSubscriptions() {
+    _messageSub?.cancel();
+    _meshMessageSub?.cancel();
+
+    if (widget.isMeshMode) {
+      _meshMessageSub = widget.meshChatService?.messages.listen(
+        _onNostrMessage,
+      );
+    } else {
+      _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
+    }
   }
 
   /// Load recent messages from SQLite for the current channel.
@@ -146,17 +158,11 @@ class _ChatScreenState extends State<ChatScreen> {
     if (widget.nickname != _nickname) {
       _nickname = widget.nickname;
     }
-    // Re-subscribe if chat service changed
-    if (widget.chatService != oldWidget.chatService) {
-      _messageSub?.cancel();
-      _messageSub = widget.chatService?.messages.listen(_onNostrMessage);
-    }
-    // Re-subscribe if mesh service changed
-    if (widget.meshChatService != oldWidget.meshChatService) {
-      _meshMessageSub?.cancel();
-      _meshMessageSub = widget.meshChatService?.messages.listen(
-        _onNostrMessage,
-      );
+
+    if (widget.chatService != oldWidget.chatService ||
+        widget.meshChatService != oldWidget.meshChatService ||
+        widget.isMeshMode != oldWidget.isMeshMode) {
+      _updateSubscriptions();
     }
   }
 

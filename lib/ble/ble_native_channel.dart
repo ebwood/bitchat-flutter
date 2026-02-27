@@ -5,10 +5,14 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Native macOS BLE Central — platform channel interface.
+/// Native macOS BLE Mesh — platform channel interface.
 ///
 /// On macOS, this uses the native CoreBluetooth plugin (BLEPlugin.swift)
-/// instead of flutter_blue_plus for reliable connections.
+/// which implements the full BitChat BLE mesh protocol:
+/// - Dual-role: Central (scanning) + Peripheral (advertising)
+/// - BinaryProtocol wire format matching original bitchat
+/// - AnnouncementPacket TLV for peer discovery
+/// - Automatic periodic announcements
 class BLENativeChannel {
   BLENativeChannel._();
   static final instance = BLENativeChannel._();
@@ -28,6 +32,10 @@ class BLENativeChannel {
     return Platform.isMacOS;
   }
 
+  // Callbacks from native
+  void Function(String peerID, String nickname, String deviceId)?
+  onPeerDiscovered;
+
   // ---------------------------------------------------------------------------
   // Adapter
   // ---------------------------------------------------------------------------
@@ -38,11 +46,25 @@ class BLENativeChannel {
     return result ?? false;
   }
 
-  /// Listen for adapter state changes from native side.
-  void setAdapterStateCallback(void Function(String state) callback) {
+  /// Listen for adapter state changes and peer discovery from native side.
+  void setMethodCallHandler({
+    void Function(String state)? onAdapterState,
+    void Function(String peerID, String nickname, String deviceId)? onPeerFound,
+  }) {
+    onPeerDiscovered = onPeerFound;
     _method.setMethodCallHandler((call) async {
-      if (call.method == 'onAdapterStateChanged') {
-        callback(call.arguments as String);
+      switch (call.method) {
+        case 'onAdapterStateChanged':
+          onAdapterState?.call(call.arguments as String);
+          break;
+        case 'onPeerDiscovered':
+          final map = Map<String, dynamic>.from(call.arguments as Map);
+          onPeerFound?.call(
+            map['peerID'] as String,
+            map['nickname'] as String,
+            map['deviceId'] as String,
+          );
+          break;
       }
     });
   }
@@ -52,6 +74,7 @@ class BLENativeChannel {
   // ---------------------------------------------------------------------------
 
   /// Start scanning for BLE devices with the bitchat service UUID.
+  /// Also starts the Peripheral role (advertising) and periodic announcements.
   Future<void> startScan() => _method.invokeMethod('startScan');
 
   /// Stop scanning.
@@ -94,20 +117,75 @@ class BLENativeChannel {
       });
 
   // ---------------------------------------------------------------------------
-  // Data
+  // Messaging (BitChat mesh protocol)
   // ---------------------------------------------------------------------------
 
-  /// Write data to a connected device's characteristic.
+  /// Set nickname for announcements.
+  Future<void> setNickname(String nickname) =>
+      _method.invokeMethod('setNickname', {'nickname': nickname});
+
+  /// Send a broadcast announcement to all connected peers.
+  Future<void> sendAnnounce({String? nickname}) => _method.invokeMethod(
+    'sendAnnounce',
+    {if (nickname != null) 'nickname': nickname},
+  );
+
+  /// Send a public chat message to all connected peers.
+  /// The plugin handles BinaryProtocol encoding.
+  Future<void> sendMessage(String content, {String? nickname}) =>
+      _method.invokeMethod('sendMessage', {
+        'content': content,
+        if (nickname != null) 'nickname': nickname,
+      });
+
+  /// Fetch location natively using CoreLocation (bypasses geolocator to avoid IP fallback issues)
+  Future<Map<String, dynamic>?> getLocation() async {
+    try {
+      final result = await _method.invokeMapMethod<String, dynamic>(
+        'getLocation',
+      );
+      return result;
+    } catch (e) {
+      debugPrint('[ble-mesh] Native getLocation failed: $e');
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Data (raw and parsed)
+  // ---------------------------------------------------------------------------
+
+  /// Write raw data to a connected device's characteristic.
   Future<void> write(String deviceId, Uint8List data) =>
       _method.invokeMethod('write', {'deviceId': deviceId, 'data': data});
 
-  /// Stream of received data from connected devices.
+  /// Stream of received data/messages from connected devices.
+  ///
+  /// Events can be either:
+  /// - Raw data: {deviceId, data} (legacy)
+  /// - Parsed message: {type: "message", senderPeerID, nickname, content,
+  ///   timestamp, isOwnMessage}
   Stream<BLEDataEvent> get dataEvents =>
       _dataChannel.receiveBroadcastStream().map((event) {
         final map = Map<String, dynamic>.from(event as Map);
+
+        // Check if this is a parsed message from BinaryProtocol
+        if (map.containsKey('type') && map['type'] == 'message') {
+          return BLEMessageEvent(
+            senderPeerID: map['senderPeerID'] as String,
+            nickname: map['nickname'] as String,
+            content: map['content'] as String,
+            timestamp: DateTime.fromMillisecondsSinceEpoch(
+              (map['timestamp'] as int),
+            ),
+            isOwnMessage: map['isOwnMessage'] as bool? ?? false,
+          );
+        }
+
+        // Legacy raw data event
         return BLEDataEvent(
-          deviceId: map['deviceId'] as String,
-          data: map['data'] as Uint8List,
+          deviceId: map['deviceId'] as String? ?? '',
+          data: map['data'] as Uint8List? ?? Uint8List(0),
         );
       });
 }
@@ -137,4 +215,27 @@ class BLEDataEvent {
   const BLEDataEvent({required this.deviceId, required this.data});
   final String deviceId;
   final Uint8List data;
+
+  /// Whether this is a parsed message (vs raw data).
+  bool get isMessage => false;
+}
+
+/// A parsed BLE mesh chat message.
+class BLEMessageEvent extends BLEDataEvent {
+  BLEMessageEvent({
+    required this.senderPeerID,
+    required this.nickname,
+    required this.content,
+    required this.timestamp,
+    this.isOwnMessage = false,
+  }) : super(deviceId: senderPeerID, data: Uint8List(0));
+
+  final String senderPeerID;
+  final String nickname;
+  final String content;
+  final DateTime timestamp;
+  final bool isOwnMessage;
+
+  @override
+  bool get isMessage => true;
 }

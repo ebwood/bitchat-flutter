@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:geolocator/geolocator.dart';
 
 import 'package:flutter/material.dart';
-import 'package:bitchat/ble/ble_mesh_service.dart';
+import 'package:bitchat/ble/ble_native_channel.dart';
 import 'package:bitchat/nostr/geohash.dart';
 import 'package:bitchat/services/identity_service.dart';
 import 'package:bitchat/services/mesh_chat_service.dart';
@@ -142,7 +142,27 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<(double, double)> _fetchLocation() async {
     if (_cachedLocation != null) return _cachedLocation!;
 
-    // Try GPS/CoreLocation first (matches original bitchat behavior)
+    // 1. Try Native macOS CoreLocation (Bypasses Geolocator to fix VPN IP fallback)
+    if (BLENativeChannel.isSupported) {
+      try {
+        final loc = await BLENativeChannel.instance.getLocation();
+        if (loc != null) {
+          final lat = (loc['latitude'] as num).toDouble();
+          final lon = (loc['longitude'] as num).toDouble();
+          debugPrint('[bitchat] Native macOS location: $lat, $lon');
+          _cachedLocation = (lat, lon);
+          return _cachedLocation!;
+        } else {
+          debugPrint(
+            '[bitchat] Native macOS location returned null, falling back',
+          );
+        }
+      } catch (e) {
+        debugPrint('[bitchat] Native macOS location error: $e');
+      }
+    }
+
+    // 2. Try GPS/CoreLocation via Geolocator
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       debugPrint('[bitchat] Location service enabled: $serviceEnabled');
@@ -243,7 +263,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _isMeshMode = meshMode;
       if (meshMode) {
         _currentChannel = _meshChannel;
-        // Mesh mode uses BLE only — do NOT switch Nostr channel
+        // Pause Nostr messages while in Mesh mode
+        _chatService.pause();
         // Start BLE mesh
         _startMesh();
       } else {
@@ -256,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
             : '#general';
         _chatService.useGeohashMode = true;
         _chatService.switchChannel(_geohashFromChannel(_currentChannel));
+        _chatService.resume();
       }
     });
   }
